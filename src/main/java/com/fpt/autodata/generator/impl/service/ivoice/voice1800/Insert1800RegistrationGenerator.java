@@ -78,6 +78,10 @@ public class Insert1800RegistrationGenerator implements Generator {
                 ParamSpec.password("smToken").label("SM Bearer token").required()
                         .hint("lấy qua generator auth.get-sm-token-api — token khác BMS"),
 
+                // Loại dịch vụ (2=1800, 3=1900)
+                ParamSpec.number("serviceType").label("Loại dịch vụ").defaultValue(2)
+                        .hint("2 = 1800, 3 = 1900"),
+
                 // Opportunity
                 ParamSpec.text("opportunityId").label("Mã cơ hội").required().placeholder("CH00085565"),
                 ParamSpec.number("registrationId").label("Registration ID").required()
@@ -149,6 +153,7 @@ public class Insert1800RegistrationGenerator implements Generator {
         String bmsToken = Params.requireString(p, "bmsToken");
         String smToken  = Params.requireString(p, "smToken");
         String bmsBase  = properties.getApi().getBaseUrl().replaceAll("/$", "");
+        int    serviceType     = (int) Params.optInt(p, "serviceType", SERVICE_TYPE);
         String opportunityId   = Params.requireString(p, "opportunityId");
         int    registrationId  = (int) Params.optInt(p, "registrationId", 0);
         if (registrationId == 0) throw new GeneratorException("registrationId là bắt buộc");
@@ -215,7 +220,7 @@ public class Insert1800RegistrationGenerator implements Generator {
             String phoneLookupUrl = SM_BASE + "/ivoice/api/registration/get-phone-booked-number";
             trace(log, "POST " + phoneLookupUrl + " (auto-lookup số 1800, taxId=" + taxId + ")");
             ObjectNode phoneLookupBody = MAPPER.createObjectNode();
-            phoneLookupBody.put("serviceType", SERVICE_TYPE);
+            phoneLookupBody.put("serviceType", serviceType);
             phoneLookupBody.put("locationId", -1);
             phoneLookupBody.put("taxID", taxId);
             phoneLookupBody.put("regDetailId", -1);
@@ -231,7 +236,8 @@ public class Insert1800RegistrationGenerator implements Generator {
         }
 
         // Step 2: Submit IVOICE (SM v2) registration
-        String ivoiceDeployDate = deployDate + "T00:00:00.000Z";
+        // SM v2 API không nhận .000Z suffix — dùng format không có timezone
+        String ivoiceDeployDate = deployDate + "T00:00:00";
         ObjectNode configInfo = MAPPER.createObjectNode();
         configInfo.put("id", 0);
         configInfo.put("connectType", 1);
@@ -269,7 +275,7 @@ public class Insert1800RegistrationGenerator implements Generator {
         regDetail.put("id", 1);
         regDetail.put("isNew", 1);
         regDetail.put("serviceGroup", SERVICE_GROUP);
-        regDetail.put("serviceType", SERVICE_TYPE);
+        regDetail.put("serviceType", serviceType);
         regDetail.put("locationId", locationId);
         regDetail.put("locationName", locationName);
         regDetail.put("wardId", wardId);
@@ -286,11 +292,12 @@ public class Insert1800RegistrationGenerator implements Generator {
 
         ObjectNode ivoiceBody = MAPPER.createObjectNode();
         ivoiceBody.put("id", 0);
+        ivoiceBody.put("command", 1);  // required by SM v2 API — 1 = INSERT
         ivoiceBody.put("opportunityCode", opportunityId);
         ivoiceBody.put("refCode", refCode);
         ivoiceBody.put("contractBMS", "");
         ivoiceBody.put("serviceGroup", SERVICE_GROUP);
-        ivoiceBody.put("serviceType", SERVICE_TYPE);
+        ivoiceBody.put("serviceType", serviceType);
         ivoiceBody.put("taxId", taxId);
         ivoiceBody.put("promotionJson", "[]");
         ivoiceBody.put("deviceJson", "[]");

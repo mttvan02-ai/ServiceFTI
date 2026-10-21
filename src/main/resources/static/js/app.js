@@ -710,7 +710,10 @@
         serviceType: '2',
         typeDocContract: '1', typeDocContractLabel: 'Hợp đồng',
       },
-      { value: '1900', label: '1900', supported: false },
+      { value: '1900', label: '1900', supported: true,
+        serviceGroup: '1', serviceGroupLabel: 'Đầu số thoại',
+        serviceType: '3',
+        typeDocContract: 1, typeDocContractLabel: 'Hợp đồng' },
       { value: 'cskh', label: 'CSKH', supported: false },
     ];
 
@@ -1166,18 +1169,51 @@
         return;
       }
 
+      // Lấy thêm old-CM token (gwcm) để sync BMS v2 sau khi new-CM xong
+      const oldCmLoginLine = addLine();
+      oldCmLoginLine.textContent = `⏳ Lấy old-CM token (${cmEmail}) để sync BMS v2…`;
+      let oldCmToken;
+      try {
+        const { token, cached } = await getCachedOrFreshCmToken(cmEmail);
+        oldCmToken = token;
+        oldCmLoginLine.textContent = cached ? `✓ Dùng lại old-CM token (${cmEmail}, còn hạn)` : `✓ old-CM token OK (${cmEmail})`;
+      } catch (err) {
+        oldCmLoginLine.textContent = '⚠ Lấy old-CM token lỗi (bỏ qua sync BMS v2): ' + (err.message || err);
+        oldCmLoginLine.classList.add('is-error');
+        oldCmToken = null;
+      }
+
       for (const regCode of regCodes) {
+        // Bước A: new-CM thực hiện YCHD
         const line = addLine();
         line.textContent = `⏳ new-CM thực hiện YCHD ${regCode} (${cmEmail})…`;
+        let newCmDone = false;
         try {
           const resp = await api.generate('voice1800.cm-execute', { cmToken, regCode });
           const d = resp.result.data;
           line.textContent = d.skipped
-            ? `✓ ${regCode} đã hoàn thành từ trước (HĐ ${d.contractNo || '?'})`
+            ? `✓ ${regCode} new-CM đã xong từ trước (HĐ ${d.contractNo || '?'})`
             : `✓ ${regCode} new-CM xong — HĐ ${d.contractNo || '?'}`;
+          newCmDone = true;
         } catch (err) {
           line.textContent = `✗ new-CM lỗi cho ${regCode}: ` + (err.message || err);
           line.classList.add('is-error');
+        }
+
+        // Bước B: old-CM UpdateStatus → sync BMS v2 "Chờ DEM duyệt" → "Hoàn thành"
+        if (newCmDone && oldCmToken) {
+          const syncLine = addLine();
+          syncLine.textContent = `⏳ Sync BMS v2 (old-CM) cho ${regCode}…`;
+          try {
+            const resp = await api.generate('registration.approve-cm', { cmToken: oldCmToken, regCode });
+            const d = resp.result.data;
+            syncLine.textContent = d.skipped
+              ? `✓ BMS v2 đã sync từ trước (HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'})`
+              : `✓ BMS v2 sync xong — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`;
+          } catch (err) {
+            syncLine.textContent = `✗ Sync BMS v2 lỗi cho ${regCode}: ` + (err.message || err);
+            syncLine.classList.add('is-error');
+          }
         }
       }
     }
@@ -1322,16 +1358,18 @@
         if (!saleEmail) { UI.toast('error', 'Điền Tài khoản Sale trước'); return; }
         if (!taxId) { UI.toast('error', 'Cần Mã số thuế KH — điền Mã cơ hội trước để tự tra'); return; }
         loadPhone1800Button.disabled = true;
-        phone1800Status.textContent = '⏳ Đang tải đầu số 1800…';
+        const svcMeta = currentServiceMeta();
+        phone1800Status.textContent = `⏳ Đang tải đầu số ${svcMeta?.label || '1800'}…`;
         try {
           const { token: smToken } = await getCachedOrFreshSmToken(saleEmail);
           const resp = await api.generate('voice1800.get-phone-booked', {
             smToken, taxId, locationId: locationSelect.value,
+            serviceType: svcMeta?.serviceType || '2',
           });
           available1800Phones = resp.result.data.phones || [];
           selected1800Phone = null;
           renderPhone1800List();
-          phone1800Status.textContent = `✓ ${available1800Phones.length} số 1800 khả dụng`;
+          phone1800Status.textContent = `✓ ${available1800Phones.length} số ${svcMeta?.label || '1800'} khả dụng`;
         } catch (err) {
           phone1800Status.textContent = '✗ ' + (err.message || err);
           phone1800Status.classList.add('is-error');
@@ -1364,8 +1402,11 @@
     const maxValue1800 = UI.h('input', { class: 'app-input', type: 'number', value: '2000000' });
     const status1800 = UI.h('div', { class: 'gen-log' });
     const autoApprove1800 = UI.h('input', { type: 'checkbox' });
+    const bgdApprover1800Input = UI.h('input', {
+      class: 'app-input', type: 'text', value: 'DuyVM4', style: 'max-width: 160px; display: inline-block;',
+    });
     const cmApprover1800 = UI.h('input', {
-      class: 'app-input', type: 'text', value: 'demstaff.am', style: 'width: auto;',
+      class: 'app-input', type: 'text', value: 'demstaff.am', style: 'max-width: 160px; display: inline-block;',
     });
 
     function addLine1800() {
@@ -1374,23 +1415,40 @@
       return p;
     }
 
-    async function run1800AutoApprove(bmsToken, opportunityId) {
+    async function run1800AutoApprove(opportunityId) {
+      // Bước 1: BGĐ duyệt — dùng account từ ô "BGĐ duyệt", KHÔNG dùng sale token
+      const bgdEmail = toLoginEmail(bgdApprover1800Input.value.trim());
+      const bgdLine = addLine1800();
+      bgdLine.textContent = `⏳ Đăng nhập BGĐ (${bgdEmail})…`;
+      let bgdToken;
+      try {
+        const { token, cached } = await getCachedOrFreshToken(bgdEmail);
+        bgdToken = token;
+        bgdLine.textContent = cached ? `✓ Dùng lại token BGĐ (${bgdEmail})` : `✓ Đăng nhập BGĐ thành công (${bgdEmail})`;
+      } catch (err) {
+        bgdLine.textContent = '✗ Đăng nhập BGĐ lỗi: ' + (err.message || err);
+        bgdLine.classList.add('is-error');
+        return;
+      }
+
       const approveLine = addLine1800();
-      approveLine.textContent = `⏳ BGĐ TTKD duyệt YCHD 1800 (${opportunityId})…`;
+      approveLine.textContent = `⏳ BGĐ duyệt YCHD 1800 (${opportunityId})…`;
       let regCodes = [];
       try {
-        const resp = await api.generate('voice1800.approve-registration', { bearerToken: bmsToken, opportunityId });
+        const resp = await api.generate('voice1800.approve-registration', { bearerToken: bgdToken, opportunityId });
         regCodes = resp.result.data.regCodes || [];
-        approveLine.textContent = `✓ BGĐ duyệt xong · regCodes: ${regCodes.join(', ')}`;
+        approveLine.textContent = `✓ BGĐ duyệt xong — CMR: ${regCodes.join(', ')}`;
       } catch (err) {
         approveLine.textContent = '✗ BGĐ duyệt lỗi: ' + (err.message || err);
         approveLine.classList.add('is-error');
         return;
       }
       if (regCodes.length === 0) {
-        addLine1800().textContent = '⚠ Không tìm được regCode — dừng trước bước CM';
+        addLine1800().textContent = '⚠ Không tìm được CMR code — dừng trước bước CM';
         return;
       }
+
+      // Bước 2: new-CM thực hiện
       const cmEmail = toLoginEmail(cmApprover1800.value.trim());
       const cmLine = addLine1800();
       cmLine.textContent = `⏳ Lấy new-CM token (${cmEmail})…`;
@@ -1398,24 +1456,58 @@
       try {
         const { token, cached } = await getCachedOrFreshNewCmToken(cmEmail);
         cmToken = token;
-        cmLine.textContent = cached ? `✓ Dùng lại new-CM token (${cmEmail})` : `✓ new-CM token OK`;
+        cmLine.textContent = cached ? `✓ Dùng lại new-CM token (${cmEmail})` : `✓ new-CM token OK (${cmEmail})`;
       } catch (err) {
         cmLine.textContent = '✗ Lấy new-CM token lỗi: ' + (err.message || err);
         cmLine.classList.add('is-error');
         return;
       }
+
+      // Bước 3: old-CM token để sync BMS v2
+      const oldCmLine = addLine1800();
+      oldCmLine.textContent = `⏳ Lấy old-CM token (${cmEmail}) để sync BMS v2…`;
+      let oldCmToken;
+      try {
+        const { token, cached } = await getCachedOrFreshCmToken(cmEmail);
+        oldCmToken = token;
+        oldCmLine.textContent = cached ? `✓ Dùng lại old-CM token (${cmEmail})` : `✓ old-CM token OK (${cmEmail})`;
+      } catch (err) {
+        oldCmLine.textContent = '⚠ Lấy old-CM token lỗi (bỏ qua sync BMS v2): ' + (err.message || err);
+        oldCmLine.classList.add('is-error');
+        oldCmToken = null;
+      }
+
       for (const regCode of regCodes) {
+        // Bước A: new-CM
         const line = addLine1800();
-        line.textContent = `⏳ CM thực hiện + ghi nhận ${regCode}…`;
+        line.textContent = `⏳ new-CM thực hiện YCHD 1800 ${regCode}…`;
+        let newCmDone = false;
         try {
           const resp = await api.generate('voice1800.cm-execute', { cmToken, regCode });
           const d = resp.result.data;
           line.textContent = d.skipped
-            ? `✓ ${regCode} đã hoàn thành (HĐ ${d.contractNo || '?'})`
-            : `✓ ${regCode} CM xong — HĐ ${d.contractNo || '?'}`;
+            ? `✓ ${regCode} new-CM đã xong từ trước (HĐ ${d.contractNo || '?'})`
+            : `✓ ${regCode} new-CM xong — HĐ ${d.contractNo || '?'}`;
+          newCmDone = true;
         } catch (err) {
-          line.textContent = `✗ CM lỗi ${regCode}: ` + (err.message || err);
+          line.textContent = `✗ new-CM lỗi ${regCode}: ` + (err.message || err);
           line.classList.add('is-error');
+        }
+
+        // Bước B: sync BMS v2 qua old-CM
+        if (newCmDone && oldCmToken) {
+          const syncLine = addLine1800();
+          syncLine.textContent = `⏳ Sync BMS v2 (old-CM) cho ${regCode}…`;
+          try {
+            const resp = await api.generate('registration.approve-cm', { cmToken: oldCmToken, regCode });
+            const d = resp.result.data;
+            syncLine.textContent = d.skipped
+              ? `✓ BMS v2 đã sync từ trước (HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'})`
+              : `✓ BMS v2 sync xong — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`;
+          } catch (err) {
+            syncLine.textContent = `✗ Sync BMS v2 lỗi ${regCode}: ` + (err.message || err);
+            syncLine.classList.add('is-error');
+          }
         }
       }
     }
@@ -1464,8 +1556,11 @@
           const { token: smToken, cached: smCached } = await getCachedOrFreshSmToken(saleEmail);
           smLine.textContent = smCached ? `✓ Dùng lại SM token` : `✓ SM token OK`;
 
+          const svcMeta = currentServiceMeta();
+          const svcLabel = svcMeta?.label || '1800';
+          const svcType  = svcMeta?.serviceType || '2';
           const insertLine = addLine1800();
-          insertLine.textContent = `⏳ Tạo YCHD 1800 cho ${opportunityId} (registrationId=${registrationId})…`;
+          insertLine.textContent = `⏳ Tạo YCHD ${svcLabel} cho ${opportunityId} (registrationId=${registrationId})…`;
           const deployDateVal = (() => {
             const d = deployDateInput.value.trim();
             const m = d.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
@@ -1473,6 +1568,7 @@
           })();
           const resp = await api.generate('voice1800.insert-registration', {
             bmsToken, smToken,
+            serviceType: parseInt(svcType, 10),
             opportunityId, registrationId, taxId, serviceId,
             saleName: saleInput.value.trim(),
             locationId: locationSelect.value,
@@ -1505,10 +1601,10 @@
             selectedPhoneCharge: selected1800Phone.subcriberCharge,
           });
           const d = resp.result.data;
-          insertLine.textContent = `✓ YCHD 1800 tạo xong — số ${d.phoneNumber} · ${d.status}`;
-          UI.toast('success', `Tạo YCHD 1800 ✓ — ${d.phoneNumber}`);
+          insertLine.textContent = `✓ YCHD ${svcLabel} tạo xong — số ${d.phoneNumber} · ${d.status}`;
+          UI.toast('success', `Tạo YCHD ${svcLabel} ✓ — ${d.phoneNumber}`);
           if (autoApprove1800.checked) {
-            await run1800AutoApprove(bmsToken, opportunityId);
+            await run1800AutoApprove(opportunityId);
           }
         } catch (err) {
           const l = addLine1800();
@@ -1559,7 +1655,9 @@
         autoApprove1800,
         UI.h('span', { class: 'lbl' }, 'Tự động BGĐ duyệt + CM ghi nhận sau khi tạo xong'),
         UI.h('span', { class: 'hint' }, '— hành động thật, mặc định tắt'),
-        UI.h('span', null, 'Tài khoản CM:'),
+        UI.h('span', null, 'BGĐ duyệt:'),
+        bgdApprover1800Input,
+        UI.h('span', null, '  CM duyệt:'),
         cmApprover1800),
       status1800);
     // ── end 1800 form ──────────────────────────────────────────────────────────
@@ -1829,7 +1927,7 @@
       footer.innerHTML = '';
       if (!meta || !meta.supported) {
         body.appendChild(unsupportedBody);
-      } else if (meta.value === '1800') {
+      } else if (meta.value === '1800' || meta.value === '1900') {
         v1800ContractSlot.appendChild(sharedContractSection);
         v1800DeploySlot.appendChild(sharedDeploySection);
         body.appendChild(form1800Body);
