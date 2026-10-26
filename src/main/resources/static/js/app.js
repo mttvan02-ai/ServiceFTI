@@ -1313,18 +1313,19 @@
     }
 
     // Đầu số 1800
+    let phoneSection1800LabelEl = UI.h('span', { class: 'lbl' }, 'Đầu số 1800');
     let available1800Phones = [];
     let selected1800Phone = null; // { phoneNumber, subcriberCharge }
     const phone1800ListBody = UI.h('div', { class: 'phone-list-body' },
       UI.h('p', { class: 'gen-signature', style: 'color: var(--ink-300); margin: 0;' },
-        'Bấm "Tải đầu số" để xem danh sách số 1800 khả dụng.'));
+        'Bấm "Tải đầu số" để xem danh sách đầu số khả dụng.'));
     const phone1800Status = UI.h('span', { class: 'hint' }, '');
 
     function renderPhone1800List() {
       phone1800ListBody.innerHTML = '';
       if (available1800Phones.length === 0) {
         phone1800ListBody.appendChild(UI.h('p', { class: 'gen-signature', style: 'color: var(--ink-300); margin: 0;' },
-          'Không tìm thấy số 1800 nào khả dụng.'));
+          `Không tìm thấy số ${currentServiceMeta()?.label || '1800'} nào khả dụng.`));
         return;
       }
       available1800Phones.forEach((row) => {
@@ -1377,7 +1378,7 @@
           loadPhone1800Button.disabled = false;
         }
       },
-    }, 'Tải đầu số 1800');
+    }, 'Tải đầu số 1800'); // label updated by renderBodyForType via loadPhone1800Button.textContent
     locationSelect.addEventListener('change', () => {
       available1800Phones = [];
       selected1800Phone = null;
@@ -1541,7 +1542,7 @@
           return;
         }
         if (!selected1800Phone) {
-          addLine1800().textContent = '✗ Chưa chọn đầu số 1800 — bấm "Tải đầu số 1800" rồi chọn 1 số';
+          addLine1800().textContent = `✗ Chưa chọn đầu số ${currentServiceMeta()?.label || '1800'} — bấm "Tải đầu số" rồi chọn 1 số`;
           return;
         }
         submit1800Button.disabled = true;
@@ -1615,7 +1616,7 @@
           submit1800Button.disabled = false;
         }
       },
-    }, 'Tạo YCHD 1800');
+    }, 'Tạo YCHD 1800'); // label updated by renderBodyForType via submit1800Button.textContent
 
     const form1800Body = UI.h('div', { class: 'gen-body' },
       UI.h('div', { class: 'field-grid-3' },
@@ -1627,7 +1628,7 @@
         field('District ID (địa chỉ thanh toán)', districtId1800Input, 'ward-id của billing address — vd: 1000009799')),
       UI.h('label', { class: 'd-block' },
         UI.h('div', { class: 'field-label' },
-          UI.h('span', { class: 'lbl' }, 'Đầu số 1800'),
+          phoneSection1800LabelEl,
           phone1800Status),
         UI.h('div', { style: 'margin-top: 6px;' }, loadPhone1800Button),
         UI.h('div', { style: 'margin-top: 8px;' }, phone1800ListBody)),
@@ -1928,6 +1929,10 @@
       if (!meta || !meta.supported) {
         body.appendChild(unsupportedBody);
       } else if (meta.value === '1800' || meta.value === '1900') {
+        const svcLabel = meta.label || '1800';
+        loadPhone1800Button.textContent = `Tải đầu số ${svcLabel}`;
+        submit1800Button.textContent = `Tạo YCHD ${svcLabel}`;
+        phoneSection1800LabelEl.textContent = `Đầu số ${svcLabel}`;
         v1800ContractSlot.appendChild(sharedContractSection);
         v1800DeploySlot.appendChild(sharedDeploySection);
         body.appendChild(form1800Body);
