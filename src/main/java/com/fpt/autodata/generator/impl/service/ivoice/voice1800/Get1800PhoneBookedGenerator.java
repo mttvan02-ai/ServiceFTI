@@ -54,15 +54,18 @@ public class Get1800PhoneBookedGenerator implements Generator {
                         .hint("tự động lấy từ Mã cơ hội"),
                 ParamSpec.enumOf("locationId", List.of("-1", "8", "4"))
                         .label("Lọc theo vùng miền").defaultValue("-1")
-                        .hint("-1 = tất cả, 8 = HCM, 4 = HN")
+                        .hint("-1 = tất cả, 8 = HCM, 4 = HN"),
+                ParamSpec.number("serviceType").label("Loại dịch vụ").defaultValue(2)
+                        .hint("2 = 1800, 3 = 1900")
         );
     }
 
     @Override
     public GenerationResult generate(Map<String, Object> p) {
-        String smToken   = Params.requireString(p, "smToken");
-        String taxId     = Params.requireString(p, "taxId");
+        String smToken    = Params.requireString(p, "smToken");
+        String taxId      = Params.requireString(p, "taxId");
         int    locationId = (int) Params.optInt(p, "locationId", -1);
+        int    serviceType = (int) Params.optInt(p, "serviceType", 2);
 
         long t0 = System.currentTimeMillis();
         List<String> log = new ArrayList<>();
@@ -70,13 +73,13 @@ public class Get1800PhoneBookedGenerator implements Generator {
                 .connectTimeout(Duration.ofSeconds(TIMEOUT_SECONDS)).build();
 
         ObjectNode body = MAPPER.createObjectNode();
-        body.put("serviceType", 2);
+        body.put("serviceType", serviceType);
         body.put("locationId", locationId);
         body.put("taxID", taxId);
         body.put("regDetailId", -1);
 
         String url = SM_BASE + "/ivoice/api/registration/get-phone-booked-number";
-        trace(log, "POST " + url + " serviceType=2 taxId=" + taxId);
+        trace(log, "POST " + url + " serviceType=" + serviceType + " taxId=" + taxId);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
