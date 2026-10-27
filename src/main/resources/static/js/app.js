@@ -237,6 +237,26 @@
       }
     }
 
+    // BMS workflow mới (2026-10): BGĐ phải duyệt tạo cơ hội TRƯỚC khi TPP đánh giá.
+    // Thiếu bước này → GET /evaluation-opportunities/criteria trả 403.
+    const bgdUsername = (values.usersCanApproval || '').split(',')[0];
+    let bgdToken = null;
+    if (wantEvaluate || wantApprove) {
+      const bgdLoginLine = addLine();
+      bgdToken = await loginAs(bgdUsername, 'BGĐ', bgdLoginLine);
+      if (bgdToken) {
+        bgdLoginLine.textContent = '✓ Token BGĐ (' + toLoginEmail(bgdUsername) + ')';
+        const approveLine = addLine();
+        approveLine.textContent = '⏳ BGĐ duyệt tạo cơ hội…';
+        try {
+          await api.generate('opportunity.approve-new', { bearerToken: bgdToken, opportunityId: opportunityCode });
+          approveLine.textContent = '✓ BGĐ duyệt tạo cơ hội xong';
+        } catch (err) {
+          approveLine.textContent = '⚠ Duyệt tạo cơ hội lỗi (có thể đã duyệt): ' + (err.message || err);
+        }
+      }
+    }
+
     let evaluated = false;
     if (wantEvaluate) {
       const line = addLine();
@@ -258,20 +278,16 @@
     if (wantApprove) {
       const line = addLine();
       if (wantEvaluate && !evaluated) {
-        line.textContent = '— Bỏ qua Phê duyệt BGĐ (đánh giá thất bại hoặc bị skip)';
+        line.textContent = '— Bỏ qua Phê duyệt đánh giá (đánh giá thất bại)';
         line.classList.add('is-error');
-      } else {
-        const bgdUsername = (values.usersCanApproval || '').split(',')[0];
-        const bgdToken = await loginAs(bgdUsername, 'BGĐ', line);
-        if (bgdToken) {
-          line.textContent = '⏳ Đang phê duyệt (BGĐ)…';
-          try {
-            await api.generate('evaluation.approve', { bearerToken: bgdToken, opportunityId: opportunityCode });
-            line.textContent = '✓ Phê duyệt thành công (BGĐ: ' + toLoginEmail(bgdUsername) + ')';
-          } catch (err) {
-            line.textContent = '✗ Phê duyệt lỗi: ' + (err.message || err);
-            line.classList.add('is-error');
-          }
+      } else if (bgdToken) {
+        line.textContent = '⏳ BGĐ duyệt đánh giá…';
+        try {
+          await api.generate('evaluation.approve', { bearerToken: bgdToken, opportunityId: opportunityCode });
+          line.textContent = '✓ Duyệt đánh giá thành công (BGĐ: ' + toLoginEmail(bgdUsername) + ')';
+        } catch (err) {
+          line.textContent = '✗ Duyệt đánh giá lỗi: ' + (err.message || err);
+          line.classList.add('is-error');
         }
       }
     }
