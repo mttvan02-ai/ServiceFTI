@@ -245,44 +245,49 @@ public class Cm1900ExecuteGenerator implements Generator {
         }
     }
 
+    // POST/PUT cũng dùng curl --noproxy như GET — Java HttpClient bị proxy chặn
+    // cho cả mutation requests, không chỉ GET. Confirmed 2026-10-27.
     private JsonNode postJson(HttpClient client, String url, String token, String body, List<String> log) {
-        return send(client, HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(TIMEOUT_SECONDS))
-                .header("Accept", "application/json, text/plain, */*")
-                .header("Authorization", "Bearer " + token)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body)).build(), log);
+        return curlJson("POST", url, token, body, log);
     }
 
     private JsonNode putJson(HttpClient client, String url, String token, String body, List<String> log) {
-        return send(client, HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(TIMEOUT_SECONDS))
-                .header("Accept", "application/json, text/plain, */*")
-                .header("Authorization", "Bearer " + token)
-                .header("Content-Type", "application/json")
-                .method("PUT", HttpRequest.BodyPublishers.ofString(body)).build(), log);
+        return curlJson("PUT", url, token, body, log);
     }
 
-    private JsonNode send(HttpClient client, HttpRequest request, List<String> log) {
-        HttpResponse<String> response;
+    private JsonNode curlJson(String method, String url, String token, String body, List<String> log) {
         try {
-            response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            ProcessBuilder pb = new ProcessBuilder(
+                "curl", "-s", "-m", String.valueOf(TIMEOUT_SECONDS),
+                "--noproxy", "*",
+                "-X", method,
+                "-H", "Accept: application/json, text/plain, */*",
+                "-H", "Authorization: Bearer " + token,
+                "-H", "Content-Type: application/json",
+                "-d", body,
+                url
+            );
+            pb.redirectErrorStream(false);
+            Process proc = pb.start();
+            String respBody = new String(proc.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            int exitCode = proc.waitFor();
+            trace(log, "-> curl " + method + " exit=" + exitCode + " body_start=" + respBody.substring(0, Math.min(100, respBody.length())));
+            JsonNode parsed = parseQuietly(respBody);
+            if (parsed == null) {
+                throw new GeneratorException("new-cm API: curl " + method + " response không parse được (exit=" + exitCode + "): " + respBody.substring(0, Math.min(200, respBody.length())));
+            }
+            String status = parsed.path("status").asText("NOTOK");
+            if (!"OK".equalsIgnoreCase(status)) {
+                String errMsg = parsed.path("error").path("message").asText(parsed.toString());
+                trace(log, "response: " + respBody);
+                throw new GeneratorException("new-cm API " + method + " error: " + errMsg, HttpStatus.BAD_GATEWAY, null);
+            }
+            return parsed;
+        } catch (GeneratorException e) {
+            throw e;
         } catch (Exception e) {
-            trace(log, "network error: " + e.getMessage());
-            throw new GeneratorException("Không kết nối được " + request.uri(), HttpStatus.BAD_GATEWAY, e);
+            throw new GeneratorException("Không gọi được new-CM (" + method + "): " + e.getMessage(), HttpStatus.BAD_GATEWAY, e);
         }
-        trace(log, "-> HTTP " + response.statusCode());
-        JsonNode parsed = parseQuietly(response.body());
-        if (response.statusCode() / 100 != 2) {
-            trace(log, "response: " + response.body());
-            HttpStatus st = HttpStatus.resolve(response.statusCode());
-            throw new GeneratorException(
-                    "new-cm API HTTP " + response.statusCode() + ": " + response.body(),
-                    st != null ? st : HttpStatus.BAD_GATEWAY, null);
-        }
-        return parsed;
     }
 
     private String toJson(Object o) {

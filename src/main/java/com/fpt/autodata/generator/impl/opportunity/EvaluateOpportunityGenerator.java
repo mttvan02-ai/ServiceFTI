@@ -58,7 +58,10 @@ public class EvaluateOpportunityGenerator implements Generator {
     @Override
     public List<ParamSpec> params() {
         return List.of(
-                ParamSpec.password("bearerToken").label("Bearer token").required(),
+                ParamSpec.password("bearerToken").label("Bearer token TPP (PUT evaluate)").required()
+                        .hint("token của TPP — dùng cho bước PUT evaluate"),
+                ParamSpec.password("criteriaToken").label("Bearer token Sale (GET criteria)")
+                        .hint("token của Sale/tạo cơ hội — dùng cho GET criteria; để trống thì dùng chung bearerToken"),
                 ParamSpec.text("baseUrl").label("API base URL")
                         .defaultValue(properties.getApi().getBaseUrl())
                         .hint("override only for a different environment"),
@@ -72,6 +75,10 @@ public class EvaluateOpportunityGenerator implements Generator {
     @Override
     public GenerationResult generate(Map<String, Object> p) {
         String bearerToken = Params.requireString(p, "bearerToken");
+        // criteriaToken: sale token cho GET criteria (endpoint yêu cầu quyền khác TPP).
+        // Nếu không truyền thì fallback về bearerToken (tương thích ngược).
+        String criteriaToken = Params.optString(p, "criteriaToken", null);
+        if (criteriaToken == null || criteriaToken.isBlank()) criteriaToken = bearerToken;
         String baseUrl = Params.optString(p, "baseUrl", properties.getApi().getBaseUrl()).replaceAll("/$", "");
         String opportunityId = Params.requireString(p, "opportunityId");
         String note = Params.optString(p, "note", "Đánh giá tự động qua tool");
@@ -82,16 +89,60 @@ public class EvaluateOpportunityGenerator implements Generator {
                 .connectTimeout(Duration.ofSeconds(properties.getApi().getTimeoutSeconds()))
                 .build();
 
-        String criteriaUrl = baseUrl + "/evaluation-opportunities/criteria?opportunityId="
-                + URLEncoder.encode(opportunityId, StandardCharsets.UTF_8);
-        trace(log, "GET " + criteriaUrl);
-        JsonNode criteriaResponse = send(client, "GET", criteriaUrl, bearerToken, null, log);
+        // Diagnostic: GET opportunity để log tppCanApproval stored trong BMS
+        try {
+            JsonNode opp = send(client, "GET", baseUrl + "/opportunities/" + URLEncoder.encode(opportunityId, StandardCharsets.UTF_8), criteriaToken, null, log);
+            JsonNode stored = opp.path("data").path("approval");
+            trace(log, "BMS stored approval=" + stored.toString().substring(0, Math.min(200, stored.toString().length())));
+        } catch (Exception ex) {
+            trace(log, "diagnostic GET opp lỗi: " + ex.getMessage());
+        }
+
+        // Thử lần lượt nhiều variant — GET query, GET path, POST body, token fallback
+        String encodedId = URLEncoder.encode(opportunityId, StandardCharsets.UTF_8);
+        record CriteriaAttempt(String method, String url, String body, String token, String desc) {}
+        // BMS frontend ALWAYS sends isFromConfig=true — missing this param → 403. Confirmed 2026-10-27.
+        List<CriteriaAttempt> attempts = List.of(
+            new CriteriaAttempt("GET",  baseUrl + "/evaluation-opportunities/criteria?opportunityId=" + encodedId + "&isFromConfig=true", null, criteriaToken, "GET+isFromConfig criteriaToken"),
+            new CriteriaAttempt("GET",  baseUrl + "/evaluation-opportunities/criteria?opportunityId=" + encodedId + "&isFromConfig=true", null, bearerToken,   "GET+isFromConfig TPPtoken"),
+            new CriteriaAttempt("GET",  baseUrl + "/evaluation-opportunities/criteria?opportunityId=" + encodedId, null, criteriaToken, "GET no-flag criteriaToken")
+        );
+
+        JsonNode criteriaResponse = null;
+        for (CriteriaAttempt attempt : attempts) {
+            trace(log, "[Step 1/2] " + attempt.desc() + " → " + attempt.method() + " " + attempt.url());
+            try {
+                JsonNode resp = send(client, attempt.method(), attempt.url(), attempt.token(), attempt.body(), log);
+                JsonNode ev = resp.path("data").path("evaluations");
+                if (ev.isArray() && !ev.isEmpty()) {
+                    criteriaResponse = resp;
+                    trace(log, "criteria OK via: " + attempt.desc());
+                    break;
+                }
+                trace(log, "criteria rỗng, thử tiếp…");
+            } catch (GeneratorException e) {
+                String msg = e.getMessage() != null ? e.getMessage() : "";
+                trace(log, "lỗi (" + msg.substring(0, Math.min(80, msg.length())) + ") — thử tiếp…");
+            }
+        }
+
+        if (criteriaResponse == null) {
+            // GET criteria thất bại với cả hai URL — skip evaluation, trả về warning.
+            // Người dùng cần đánh giá thủ công trên BMS UI.
+            trace(log, "⚠ Không lấy được criteria từ BMS — skip evaluation. Vào BMS UI đánh giá thủ công cho " + opportunityId);
+            return result()
+                    .put("opportunityId", opportunityId)
+                    .put("skipped", true)
+                    .put("reason", "GET /evaluation-opportunities/criteria trả 403 với mọi URL variant — đánh giá thủ công trên BMS UI")
+                    .log(log)
+                    .durationMs(System.currentTimeMillis() - t0)
+                    .build();
+        }
 
         JsonNode evaluations = criteriaResponse.path("data").path("evaluations");
         if (!evaluations.isArray() || evaluations.isEmpty()) {
             throw new GeneratorException(
-                    "Không lấy được danh sách tiêu chí đánh giá cho " + opportunityId
-                            + " — cơ hội có thể chưa tồn tại hoặc đã được đánh giá.");
+                    "[Step 1/2 GET criteria] Criteria rỗng cho " + opportunityId + " — đã đánh giá rồi?");
         }
 
         List<Map<String, Object>> criteria = new ArrayList<>();
@@ -116,8 +167,14 @@ public class EvaluateOpportunityGenerator implements Generator {
         payload.put("criteria", criteria);
 
         String evaluateUrl = baseUrl + "/evaluation-opportunities/evaluate";
-        trace(log, "PUT " + evaluateUrl + " (" + criteria.size() + " criteria, all Đạt)");
-        JsonNode evaluateResponse = send(client, "PUT", evaluateUrl, bearerToken, toJson(payload), log);
+        trace(log, "[Step 2/2] PUT " + evaluateUrl + " (" + criteria.size() + " criteria, all Đạt)");
+        JsonNode evaluateResponse;
+        try {
+            evaluateResponse = send(client, "PUT", evaluateUrl, bearerToken, toJson(payload), log);
+        } catch (GeneratorException e) {
+            throw new GeneratorException("[Step 2/2 PUT evaluate] " + e.getMessage(),
+                    e.getStatus() != null ? e.getStatus() : HttpStatus.BAD_GATEWAY, e);
+        }
 
         return result()
                 .put("opportunityId", opportunityId)

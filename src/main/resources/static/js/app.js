@@ -245,9 +245,13 @@
       if (tppToken) {
         line.textContent = '⏳ Đang đánh giá (TPP)…';
         try {
-          await api.generate('evaluation.evaluate', { bearerToken: tppToken, opportunityId: opportunityCode });
-          line.textContent = '✓ Đánh giá thành công (TPP: ' + toLoginEmail(tppUsername) + ')';
-          evaluated = true;
+          const evalResp = await api.generate('evaluation.evaluate', { bearerToken: tppToken, criteriaToken: values.bearerToken, opportunityId: opportunityCode });
+          if (evalResp.result.data.skipped) {
+            line.textContent = '⚠ Đánh giá skip — đánh giá thủ công trên BMS UI cho ' + opportunityCode;
+          } else {
+            line.textContent = '✓ Đánh giá thành công (TPP: ' + toLoginEmail(tppUsername) + ')';
+            evaluated = true;
+          }
         } catch (err) {
           line.textContent = '✗ Đánh giá lỗi: ' + (err.message || err);
           line.classList.add('is-error');
@@ -257,10 +261,8 @@
 
     if (wantApprove) {
       const line = addLine();
-      if (revenue < 300000000) {
-        line.textContent = '— Bỏ qua Phê duyệt (doanh thu < 300 triệu, không cần phê duyệt)';
-      } else if (wantEvaluate && !evaluated) {
-        line.textContent = '— Bỏ qua Phê duyệt (đánh giá thất bại)';
+      if (wantEvaluate && !evaluated) {
+        line.textContent = '— Bỏ qua Phê duyệt BGĐ (đánh giá thất bại hoặc bị skip)';
         line.classList.add('is-error');
       } else {
         const bgdUsername = (values.usersCanApproval || '').split(',')[0];
@@ -790,8 +792,9 @@
         taxIdInput.value = d.taxId;
         oppLookupStatus.textContent = `✓ RefCode=${d.refCode}, KH=${d.customerId}, Mã số thuế=${d.taxId}`;
         onIdentityChange();
-        // Auto-fetch serviceId cho 1800 (không chặn flow nếu lỗi)
-        if (currentServiceMeta()?.value === '1800' && d.registrationId) {
+        // Auto-fetch serviceId cho 1800 + 1900 (không chặn flow nếu lỗi)
+        const svcVal = currentServiceMeta()?.value;
+        if ((svcVal === '1800' || svcVal === '1900') && d.registrationId) {
           fetchServiceId1800(saleEmail, d.registrationId).catch(() => {});
         }
       } catch (err) {
@@ -2160,10 +2163,9 @@
    * "Tự động Đánh giá / Phê duyệt" checkboxes — the follow-up step confirmed
    * 2026-08-25 (see memory/api-contracts.md). Đánh giá (TPP) is required by
    * BR03 before an opportunity can move forward at all, so it defaults ON;
-   * Phê duyệt (BGĐ) only applies when expectedRevenue >= 300tr, but is also
-   * left ON by default since skipping it below the threshold is a no-op
-   * (handled in runPostCreateFlow), not an error — same bearer token is
-   * reused for both calls, so no extra login step is needed.
+   * Phê duyệt đánh giá (BGĐ) LUÔN cần thiết sau TPP evaluate — BMS đưa cơ hội
+   * vào "Chờ duyệt / Yêu cầu đánh giá cơ hội" bất kể doanh thu. Giả định BR03
+   * chỉ áp dụng ≥300tr là sai (confirmed 2026-10-27). Checkbox mặc định ON.
    */
   function mountAutoFlowCheckboxes(card) {
     const footer = card.querySelector('.gen-footer');
@@ -2199,7 +2201,7 @@
 
     const row = UI.h('div', { class: 'autoflow-options' },
       UI.h('label', { class: 'autoflow-check' }, evalCb, ' Tự động Đánh giá (TPP) sau khi tạo'),
-      UI.h('label', { class: 'autoflow-check' }, apprCb, ' Tự động Phê duyệt (BGĐ) nếu doanh thu ≥ 300 triệu'),
+      UI.h('label', { class: 'autoflow-check' }, apprCb, ' Tự động Phê duyệt đánh giá (BGĐ) sau khi TPP đánh giá'),
       UI.h('label', { class: 'autoflow-check' }, noteCb, ' Tự động chuyển hết Vòng đời cơ hội (tiến độ 100%)'),
       noteInput,
       UI.h('label', { class: 'autoflow-check' }, quoteCb, ' Tự động tạo Báo giá (đính kèm dummy.pdf)'),

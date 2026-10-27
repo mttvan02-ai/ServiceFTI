@@ -413,7 +413,20 @@ public class Insert1800RegistrationGenerator implements Generator {
 
         String bmsUrl = bmsBase + "/registration/" + registrationId;
         trace(log, "POST " + bmsUrl + " opportunityId=" + opportunityId + " isUpdateTemp=false");
-        JsonNode bmsResult = postJson(client, bmsUrl, bmsToken, toJson(bmsBody), log);
+        String bmsStatus = "Chờ BGĐ duyệt";
+        try {
+            postJson(client, bmsUrl, bmsToken, toJson(bmsBody), log);
+        } catch (GeneratorException e) {
+            // BMS 400 "đang trong quy trình duyệt CM hoặc đã hoàn thành" — đăng ký đã tồn tại
+            // từ lần chạy trước, không cần ghi đè. Bỏ qua và tiếp tục flow BGĐ + CM.
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (msg.contains("đang trong quy trình") || msg.contains("BUSINESS_ERROR")) {
+                trace(log, "BMS skip: " + msg.substring(0, Math.min(120, msg.length())));
+                bmsStatus = "Đã tồn tại (skip BMS) — tiếp tục BGĐ/CM";
+            } else {
+                throw e;
+            }
+        }
 
         return result()
                 .put("refCode", refCode)
@@ -421,7 +434,7 @@ public class Insert1800RegistrationGenerator implements Generator {
                 .put("subcriberCharge", subcriberCharge)
                 .put("registrationId", registrationId)
                 .put("opportunityId", opportunityId)
-                .put("status", "Chờ BGĐ duyệt")
+                .put("status", bmsStatus)
                 .log(log)
                 .durationMs(System.currentTimeMillis() - t0)
                 .build();
