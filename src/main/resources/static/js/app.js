@@ -245,13 +245,9 @@
       if (tppToken) {
         line.textContent = '⏳ Đang đánh giá (TPP)…';
         try {
-          const evalResp = await api.generate('evaluation.evaluate', { bearerToken: tppToken, criteriaToken: values.bearerToken, opportunityId: opportunityCode });
-          if (evalResp.result.data.skipped) {
-            line.textContent = '⚠ Đánh giá skip — đánh giá thủ công trên BMS UI cho ' + opportunityCode;
-          } else {
-            line.textContent = '✓ Đánh giá thành công (TPP: ' + toLoginEmail(tppUsername) + ')';
-            evaluated = true;
-          }
+          await api.generate('evaluation.evaluate', { bearerToken: tppToken, opportunityId: opportunityCode });
+          line.textContent = '✓ Đánh giá thành công (TPP: ' + toLoginEmail(tppUsername) + ')';
+          evaluated = true;
         } catch (err) {
           line.textContent = '✗ Đánh giá lỗi: ' + (err.message || err);
           line.classList.add('is-error');
