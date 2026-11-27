@@ -716,7 +716,16 @@
         serviceGroup: '1', serviceGroupLabel: 'Đầu số thoại',
         serviceType: '3',
         typeDocContract: 1, typeDocContractLabel: 'Hợp đồng' },
-      { value: 'cskh', label: 'CSKH', supported: false },
+      // CSKH (serviceGroup=1, serviceType=8) — reverse-engineer live 2026-11-26
+      // (xem memory/api-contracts.md §CSKH). Form riêng (formCskhBody): chọn số
+      // theo Nền tảng(platform 81=VOIP/82=Brandname)+Đối tác(partnerId) thay cho
+      // Tỉnh+MST, thêm priceJson/packageProfile. Chain: cskh.insert-registration
+      // → approve-registration → cm-execute.
+      { value: 'cskh', label: 'CSKH', supported: true,
+        serviceGroup: '1', serviceGroupLabel: 'Đầu số thoại',
+        serviceType: '8',
+        platform: '81', platformLabel: 'VOIP',
+        typeDocContract: 1, typeDocContractLabel: 'Hợp đồng' },
     ];
 
     const saleInput = UI.h('input', { class: 'app-input', type: 'text', placeholder: 'vd: thitlh' });
@@ -792,10 +801,12 @@
         taxIdInput.value = d.taxId;
         oppLookupStatus.textContent = `✓ RefCode=${d.refCode}, KH=${d.customerId}, Mã số thuế=${d.taxId}`;
         onIdentityChange();
-        // Auto-fetch serviceId cho 1800 + 1900 (không chặn flow nếu lỗi)
+        // Auto-fetch serviceId cho 1800 + 1900 + CSKH (không chặn flow nếu lỗi)
         const svcVal = currentServiceMeta()?.value;
         if ((svcVal === '1800' || svcVal === '1900') && d.registrationId) {
           fetchServiceId1800(saleEmail, d.registrationId).catch(() => {});
+        } else if (svcVal === 'cskh' && d.registrationId) {
+          fetchServiceIdCskh(saleEmail, d.registrationId).catch(() => {});
         }
       } catch (err) {
         oppLookupStatus.textContent = '✗ Tra cứu lỗi: ' + (err.message || err);
@@ -810,8 +821,10 @@
     function updateGenClass() {
       const meta = currentServiceMeta();
       if (!meta || !meta.supported) { genClassEl.textContent = '—'; return; }
-      genClassEl.textContent = meta.value === '1800'
+      genClassEl.textContent = (meta.value === '1800' || meta.value === '1900')
         ? 'voice1800.insert-registration → approve-registration → cm-execute'
+        : meta.value === 'cskh'
+        ? 'cskh.insert-registration → approve-registration → cm-execute'
         : 'ivoice.lookup-opportunity → ivoice.create-registration-detail → ivoice.insert-registration';
     }
     function renderDerivedSummary() {
@@ -1666,6 +1679,418 @@
       status1800);
     // ── end 1800 form ──────────────────────────────────────────────────────────
 
+    // ── CSKH form ───────────────────────────────────────────────────────────────
+    // Khác hẳn 1800/1900 (reverse-engineer live 2026-11-26, xem memory/api-contracts.md
+    // §CSKH): chọn số theo Nền tảng(platform 81=VOIP/82=Brandname)+Đối tác(partnerId),
+    // KHÔNG theo Tỉnh+MST. Thêm priceJson + packageProfile. Dùng chung shared
+    // contract/deploy section (locationSelect/wardSelect/contact...) như 1800.
+    const cskhContractSlot = UI.h('div', { style: 'display:contents' });
+    const cskhDeploySlot   = UI.h('div', { style: 'display:contents' });
+
+    const serviceIdCskhInput = UI.h('input', { class: 'app-input', type: 'number', value: '0',
+      placeholder: 'tự động lấy sau khi điền Mã cơ hội' });
+    const districtIdCskhInput = UI.h('input', { class: 'app-input', type: 'number', value: '0',
+      placeholder: 'vd: 1000009712 — ward-id của địa chỉ thanh toán' });
+    const effectiveDateCskh = UI.h('input', { class: 'app-input', type: 'text',
+      value: (() => { const d = new Date(Date.now() - 86400000); return d.toISOString().substring(0, 10); })() });
+
+    async function fetchServiceIdCskh(saleEmail, registrationId) {
+      try {
+        const { token } = await getCachedOrFreshToken(saleEmail);
+        const resp = await api.proxy('registration/' + registrationId, token);
+        const sid = resp?.data?.serviceId;
+        if (sid) { serviceIdCskhInput.value = String(sid); }
+      } catch (_) { /* silent */ }
+    }
+
+    // Nền tảng CSKH: mã platform composite dùng cho cả get-phone-booked (serviceType)
+    // lẫn configInfo.platform — 81=VOIP, 82=Brandname (xác nhận live).
+    const platformCskhSelect = UI.h('select', { class: 'app-select' },
+      UI.h('option', { value: '81' }, 'VOIP'),
+      UI.h('option', { value: '82' }, 'Brandname'));
+    // Đối tác triển khai (partnerId) — code-details PartnerNamePostgre. ID 1/2 xác nhận
+    // live (Telesales=1, ViHAT=2); còn lại suy theo thứ tự danh sách (kiểm lại nếu số rỗng).
+    const CSKH_PARTNERS = [
+      { id: 1, name: 'Telesales' }, { id: 2, name: 'ViHAT' }, { id: 3, name: 'ITS' },
+      { id: 4, name: 'SouthTelecomHCM' }, { id: 5, name: 'SouthTelecomHNI' }, { id: 6, name: 'VNTEL' },
+      { id: 7, name: 'LEEON' }, { id: 8, name: 'INTERITSHNI' }, { id: 9, name: 'INTERITSHCM' },
+      { id: 10, name: 'LEEONHNI' }, { id: 11, name: 'LEEONHCM' }, { id: 12, name: 'GTELHCM' },
+      { id: 13, name: 'GTELHNI' }, { id: 14, name: 'STEL177' },
+    ];
+    const partnerCskhSelect = UI.h('select', { class: 'app-select' },
+      ...CSKH_PARTNERS.map((pt) => UI.h('option', { value: String(pt.id) }, pt.name)));
+    partnerCskhSelect.value = '2'; // ViHAT mặc định
+    const packageProfileCskhInput = UI.h('input', { class: 'app-input', type: 'number', value: '1' });
+    const autoCallCskhSelect = UI.h('select', { class: 'app-select' },
+      UI.h('option', { value: '0' }, 'Không'),
+      UI.h('option', { value: '1' }, 'Có'));
+    const ipMainCskhInput = UI.h('input', { class: 'app-input', type: 'text', value: randIp() });
+    const portMainCskhInput = UI.h('input', { class: 'app-input', type: 'text', value: '5060' });
+    const ipMainTypeCskhSelect = UI.h('select', { class: 'app-select' },
+      UI.h('option', { value: '1' }, 'Public'),
+      UI.h('option', { value: '2' }, 'MPLS'));
+    const maxValueCskhInput = UI.h('input', { class: 'app-input', type: 'number', value: '2000000' });
+    const priceJsonCskhInput = UI.h('textarea', {
+      class: 'app-input', rows: 3, style: 'font-family: monospace; font-size: 12px;',
+      value: '[]',
+      placeholder: '[{"platForm":"VoIP","partner":"ViHAT","operator":"VinaPhone","priceType":"Ngoại mạng","unitPrice":100000,"minutesFrom":0,"minutesTo":50}]',
+    });
+
+    const billingCskhName = UI.h('input', { class: 'app-input', type: 'text', value: randVnName() });
+    const billingCskhPhone = UI.h('input', { class: 'app-input', type: 'text', value: randVnPhone() });
+    const billingCskhEmail = UI.h('input', { class: 'app-input', type: 'email', placeholder: 'để trống → dùng email Sale' });
+    const techCskhName = UI.h('input', { class: 'app-input', type: 'text', value: randVnName() });
+    const techCskhPhone = UI.h('input', { class: 'app-input', type: 'text', value: randVnPhone() });
+    const techCskhEmail = UI.h('input', { class: 'app-input', type: 'email', placeholder: 'để trống → dùng email Sale' });
+
+    let availableCskhPhones = [];
+    let selectedCskhPhone = null; // { phoneNumber, subcriberCharge }
+    const phoneCskhListBody = UI.h('div', { class: 'phone-list-body' },
+      UI.h('p', { class: 'gen-signature', style: 'color: var(--ink-300); margin: 0;' },
+        'Chọn Nền tảng + Đối tác rồi bấm "Tải số CSKH".'));
+    const phoneCskhStatus = UI.h('span', { class: 'hint' }, '');
+
+    function renderPhoneCskhList() {
+      phoneCskhListBody.innerHTML = '';
+      if (availableCskhPhones.length === 0) {
+        phoneCskhListBody.appendChild(UI.h('p', { class: 'gen-signature', style: 'color: var(--ink-300); margin: 0;' },
+          'Không có số CSKH nào đã book cho Nền tảng/Đối tác/MST này. Cần book số trước ở màn đầu số.'));
+        return;
+      }
+      availableCskhPhones.forEach((row) => {
+        const radio = UI.h('input', { type: 'radio', name: 'phoneCskhPick' });
+        if (selectedCskhPhone && selectedCskhPhone.phoneNumber === row.phoneNumber) radio.checked = true;
+        radio.addEventListener('change', () => {
+          selectedCskhPhone = { phoneNumber: row.phoneNumber, subcriberCharge: row.subcriberCharge || 0 };
+        });
+        const priceText = row.subcriberCharge != null
+          ? `${Number(row.subcriberCharge).toLocaleString('vi-VN')}đ/tháng` : '';
+        phoneCskhListBody.appendChild(UI.h('label', {
+          class: 'd-flex align-items-center gap-2', style: 'padding: 3px 0; cursor: pointer;',
+        }, radio,
+          UI.h('span', { class: 'mono' }, row.phoneNumber || '(?)'),
+          UI.h('span', { class: 'hint' }, priceText)));
+      });
+      if (!selectedCskhPhone && availableCskhPhones.length > 0) {
+        selectedCskhPhone = { phoneNumber: availableCskhPhones[0].phoneNumber,
+          subcriberCharge: availableCskhPhones[0].subcriberCharge || 0 };
+        phoneCskhListBody.querySelector('input[type=radio]').checked = true;
+      }
+    }
+
+    const loadPhoneCskhButton = UI.h('button', {
+      type: 'button', class: 'btn-generate',
+      style: 'margin-top: 6px; padding: 6px 14px; font-size: 12px; width: auto;',
+      onclick: async () => {
+        const saleEmail = currentSaleEmail();
+        const taxId = taxIdInput.value.trim();
+        if (!saleEmail) { UI.toast('error', 'Điền Tài khoản Sale trước'); return; }
+        if (!taxId) { UI.toast('error', 'Cần Mã số thuế KH — điền Mã cơ hội trước để tự tra'); return; }
+        loadPhoneCskhButton.disabled = true;
+        phoneCskhStatus.textContent = '⏳ Đang tải số CSKH…';
+        phoneCskhStatus.classList.remove('is-error');
+        try {
+          const { token: smToken } = await getCachedOrFreshSmToken(saleEmail);
+          const resp = await api.generate('cskh.get-phone-booked', {
+            smToken, taxId,
+            platform: platformCskhSelect.value,
+            partnerId: parseInt(partnerCskhSelect.value, 10),
+          });
+          availableCskhPhones = resp.result.data.phones || [];
+          selectedCskhPhone = null;
+          renderPhoneCskhList();
+          phoneCskhStatus.textContent = `✓ ${availableCskhPhones.length} số CSKH đã book`;
+        } catch (err) {
+          phoneCskhStatus.textContent = '✗ ' + (err.message || err);
+          phoneCskhStatus.classList.add('is-error');
+        } finally {
+          loadPhoneCskhButton.disabled = false;
+        }
+      },
+    }, 'Tải số CSKH');
+    // Đổi nền tảng/đối tác → clear danh sách cũ, bắt tải lại
+    [platformCskhSelect, partnerCskhSelect].forEach((sel) => sel.addEventListener('change', () => {
+      availableCskhPhones = [];
+      selectedCskhPhone = null;
+      phoneCskhListBody.innerHTML = '';
+      phoneCskhListBody.appendChild(UI.h('p', { class: 'gen-signature', style: 'color: var(--ink-300); margin: 0;' },
+        'Đã đổi Nền tảng/Đối tác — bấm "Tải số CSKH" lại.'));
+    }));
+
+    const autoApproveCskh = UI.h('input', { type: 'checkbox' });
+    const bgdApproverCskhInput = UI.h('input', {
+      class: 'app-input', type: 'text', value: 'DuyVM4', style: 'max-width: 160px; display: inline-block;',
+    });
+    const cmApproverCskh = UI.h('input', {
+      class: 'app-input', type: 'text', value: 'demstaff.am', style: 'max-width: 160px; display: inline-block;',
+    });
+    const statusCskh = UI.h('div', { class: 'gen-log' });
+    function addLineCskh() {
+      const p = UI.h('p', { class: 'log-line' });
+      statusCskh.appendChild(p);
+      return p;
+    }
+
+    // Chuỗi auto duyệt CSKH: cskh.approve-registration (BGĐ) → cskh.cm-execute (new-CM)
+    // → registration.approve-cm (old-CM sync BMS v2). Mirror run1800AutoApprove.
+    async function runCskhAutoApprove(opportunityId) {
+      const bgdEmail = toLoginEmail(bgdApproverCskhInput.value.trim());
+      const bgdLine = addLineCskh();
+      bgdLine.textContent = `⏳ Đăng nhập BGĐ (${bgdEmail})…`;
+      let bgdToken;
+      try {
+        const { token, cached } = await getCachedOrFreshToken(bgdEmail);
+        bgdToken = token;
+        bgdLine.textContent = cached ? `✓ Dùng lại token BGĐ (${bgdEmail})` : `✓ Đăng nhập BGĐ thành công (${bgdEmail})`;
+      } catch (err) {
+        bgdLine.textContent = '✗ Đăng nhập BGĐ lỗi: ' + (err.message || err);
+        bgdLine.classList.add('is-error');
+        return;
+      }
+
+      const approveLine = addLineCskh();
+      approveLine.textContent = `⏳ BGĐ duyệt YCHD CSKH (${opportunityId})…`;
+      let regCodes = [];
+      try {
+        const resp = await api.generate('cskh.approve-registration', { bearerToken: bgdToken, opportunityId });
+        regCodes = resp.result.data.regCodes || [];
+        approveLine.textContent = `✓ BGĐ duyệt xong — CMR: ${regCodes.join(', ')}`;
+      } catch (err) {
+        approveLine.textContent = '✗ BGĐ duyệt lỗi: ' + (err.message || err);
+        approveLine.classList.add('is-error');
+        return;
+      }
+      if (regCodes.length === 0) {
+        addLineCskh().textContent = '⚠ Không tìm được CMR code — dừng trước bước CM';
+        return;
+      }
+
+      const cmEmail = toLoginEmail(cmApproverCskh.value.trim());
+      const cmLine = addLineCskh();
+      cmLine.textContent = `⏳ Lấy new-CM token (${cmEmail})…`;
+      let cmToken;
+      try {
+        const { token, cached } = await getCachedOrFreshNewCmToken(cmEmail);
+        cmToken = token;
+        cmLine.textContent = cached ? `✓ Dùng lại new-CM token (${cmEmail})` : `✓ new-CM token OK (${cmEmail})`;
+      } catch (err) {
+        cmLine.textContent = '✗ Lấy new-CM token lỗi: ' + (err.message || err);
+        cmLine.classList.add('is-error');
+        return;
+      }
+
+      const oldCmLine = addLineCskh();
+      oldCmLine.textContent = `⏳ Lấy old-CM token (${cmEmail}) để sync BMS v2…`;
+      let oldCmToken;
+      try {
+        const { token, cached } = await getCachedOrFreshCmToken(cmEmail);
+        oldCmToken = token;
+        oldCmLine.textContent = cached ? `✓ Dùng lại old-CM token (${cmEmail})` : `✓ old-CM token OK (${cmEmail})`;
+      } catch (err) {
+        oldCmLine.textContent = '⚠ Lấy old-CM token lỗi (bỏ qua sync BMS v2): ' + (err.message || err);
+        oldCmLine.classList.add('is-error');
+        oldCmToken = null;
+      }
+
+      for (const regCode of regCodes) {
+        const line = addLineCskh();
+        line.textContent = `⏳ new-CM thực hiện YCHD CSKH ${regCode}…`;
+        let newCmDone = false;
+        try {
+          const resp = await api.generate('cskh.cm-execute', { cmToken, regCode });
+          const d = resp.result.data;
+          line.textContent = d.skipped
+            ? `✓ ${regCode} new-CM đã xong từ trước (HĐ ${d.contractNo || '?'})`
+            : `✓ ${regCode} new-CM xong — HĐ ${d.contractNo || '?'}`;
+          newCmDone = true;
+        } catch (err) {
+          // create-contract CSKH chưa finalize (chưa sinh phụ lục / chưa sync DEM).
+          // cm-execute đã DỪNG, KHÔNG đánh dấu status=4 → record KHÔNG bị khóa.
+          // KHÔNG chạy old-CM (nó sẽ UpdateStatus=4 làm khóa record ở trạng thái
+          // lệch). Hướng dẫn user duyệt DEM tay.
+          line.textContent = `✗ new-CM chưa finalize ${regCode}: ` + (err.message || err);
+          line.classList.add('is-error');
+          const hint = addLineCskh();
+          hint.textContent = `→ Record CHƯA bị khóa. Vào new-CM duyệt DEM tay cho ${regCode}, hoặc bấm chạy lại.`;
+        }
+        // Chỉ sync BMS v2 (old-CM) khi new-CM đã finalize thành công (có phụ lục).
+        // Nếu new-CM lỗi → KHÔNG chạy old-CM (tránh UpdateStatus=4 khóa record).
+        if (newCmDone && oldCmToken) {
+          const syncLine = addLineCskh();
+          syncLine.textContent = `⏳ Sync BMS v2 (old-CM) cho ${regCode}…`;
+          try {
+            const resp = await api.generate('registration.approve-cm', { cmToken: oldCmToken, regCode });
+            const d = resp.result.data;
+            syncLine.textContent = d.skipped
+              ? `✓ BMS v2 đã sync từ trước (HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'})`
+              : `✓ BMS v2 sync xong — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`;
+          } catch (err) {
+            syncLine.textContent = `✗ Sync BMS v2 lỗi ${regCode}: ` + (err.message || err);
+            syncLine.classList.add('is-error');
+          }
+        }
+      }
+    }
+
+    const submitCskhButton = UI.h('button', {
+      class: 'btn-generate', type: 'button',
+      onclick: async () => {
+        statusCskh.innerHTML = '';
+        const saleEmail = currentSaleEmail();
+        const opportunityId = opportunityCodeInput.value.trim();
+        const registrationId = parseInt(registrationIdInput.value, 10);
+        const taxId = taxIdInput.value.trim();
+        let serviceId = parseInt(serviceIdCskhInput.value, 10);
+        const districtId = parseInt(districtIdCskhInput.value, 10);
+        if (!saleEmail || !opportunityId || !registrationId) {
+          addLineCskh().textContent = '✗ Điền Tài khoản Sale + Mã cơ hội (đợi tra cứu tự động xong)';
+          return;
+        }
+        // serviceId chưa có (auto-fetch lúc tra cứu bị lỗi/chạy chưa xong) → lấy lại on-demand
+        if (!serviceId) {
+          const svcLine = addLineCskh();
+          svcLine.textContent = '⏳ Lấy Service ID (GET /registration/{id})…';
+          await fetchServiceIdCskh(saleEmail, registrationId);
+          serviceId = parseInt(serviceIdCskhInput.value, 10);
+          if (!serviceId) {
+            svcLine.textContent = '✗ Không lấy được Service ID từ GET /registration/' + registrationId + ' (.data.serviceId trống) — kiểm tra registrationId/token rồi điền tay';
+            svcLine.classList.add('is-error');
+            return;
+          }
+          svcLine.textContent = '✓ Service ID = ' + serviceId;
+        }
+        if (!districtId) { addLineCskh().textContent = '✗ Điền District ID cho địa chỉ thanh toán (vd: 1000009712)'; return; }
+        if (!wardSelect.value) { addLineCskh().textContent = '✗ Chưa chọn Phường/Xã triển khai — tải danh sách rồi chọn'; return; }
+        if (!selectedCskhPhone) { addLineCskh().textContent = '✗ Chưa chọn số CSKH — bấm "Tải số CSKH" rồi chọn 1 số'; return; }
+        submitCskhButton.disabled = true;
+        try {
+          const bmsLine = addLineCskh();
+          bmsLine.textContent = `⏳ Lấy BMS token (${saleEmail})…`;
+          const { token: bmsToken, cached: bmsCached } = await getCachedOrFreshToken(saleEmail);
+          bmsLine.textContent = bmsCached ? '✓ Dùng lại BMS token' : '✓ BMS token OK';
+
+          const smLine = addLineCskh();
+          smLine.textContent = `⏳ Lấy SM token (${saleEmail})…`;
+          const { token: smToken, cached: smCached } = await getCachedOrFreshSmToken(saleEmail);
+          smLine.textContent = smCached ? '✓ Dùng lại SM token' : '✓ SM token OK';
+
+          const insertLine = addLineCskh();
+          insertLine.textContent = `⏳ Tạo YCHD CSKH cho ${opportunityId} (registrationId=${registrationId})…`;
+          const deployDateVal = (() => {
+            const d = deployDateInput.value.trim();
+            const m = d.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+            return m ? `${m[3]}-${m[1]}-${m[2]}` : d;
+          })();
+          const resp = await api.generate('cskh.insert-registration', {
+            bmsToken, smToken,
+            opportunityId, registrationId, taxId, serviceId,
+            saleName: saleInput.value.trim(),
+            platform: platformCskhSelect.value,
+            partnerId: parseInt(partnerCskhSelect.value, 10),
+            packageProfile: parseInt(packageProfileCskhInput.value, 10) || 1,
+            autoCall: parseInt(autoCallCskhSelect.value, 10) || 0,
+            locationId: locationSelect.value,
+            locationName: locationSelect.selectedOptions[0].textContent,
+            wardId: parseInt(wardSelect.value, 10),
+            wardName: wardSelect.selectedOptions[0] ? wardSelect.selectedOptions[0].textContent : '',
+            districtId,
+            locationNumber: locationNumberInput.value.trim(),
+            deployDate: deployDateVal,
+            contactName: contactNameInput.value.trim(),
+            contactPhone: contactPhoneInput.value.trim(),
+            contactEmail: contactEmailInput.value.trim(),
+            billingName: billingCskhName.value.trim(),
+            billingEmail: billingCskhEmail.value.trim() || saleEmail,
+            billingPhone: billingCskhPhone.value.trim(),
+            techName: techCskhName.value.trim(),
+            techEmail: techCskhEmail.value.trim() || saleEmail,
+            techPhone: techCskhPhone.value.trim(),
+            feeContract: parseInt(feeContractInput.value, 10) || 0,
+            monthlyFeeContract: parseInt(monthlyFeeContractInput.value, 10) || 0,
+            dateContractMonth: parseInt(dateContractMonthInput.value, 10) || 1,
+            limitCreditDay: parseInt(limitCreditDayInput.value, 10) || 30,
+            effectiveDate: effectiveDateCskh.value.trim(),
+            ipMain: ipMainCskhInput.value.trim(),
+            portMain: portMainCskhInput.value.trim(),
+            ipMainType: parseInt(ipMainTypeCskhSelect.value, 10) || 1,
+            maxValue: parseInt(maxValueCskhInput.value, 10) || 2000000,
+            priceJson: priceJsonCskhInput.value.trim() || '[]',
+            isManyPrices: 0,
+            selectedPhoneNumber: selectedCskhPhone.phoneNumber,
+            selectedPhoneCharge: selectedCskhPhone.subcriberCharge,
+          });
+          const d = resp.result.data;
+          insertLine.textContent = `✓ YCHD CSKH tạo xong — số ${d.phoneNumber} · ${d.status}`;
+          UI.toast('success', `Tạo YCHD CSKH ✓ — ${d.phoneNumber}`);
+          if (autoApproveCskh.checked) {
+            await runCskhAutoApprove(opportunityId);
+          }
+        } catch (err) {
+          const l = addLineCskh();
+          l.textContent = '✗ Lỗi: ' + (err.message || err);
+          l.classList.add('is-error');
+          UI.toast('error', 'Tạo YCHD CSKH lỗi: ' + (err.message || err));
+        } finally {
+          submitCskhButton.disabled = false;
+        }
+      },
+    }, 'Tạo YCHD CSKH');
+
+    const formCskhBody = UI.h('div', { class: 'gen-body' },
+      UI.h('div', { class: 'field-grid-3' },
+        field('Service ID', serviceIdCskhInput, 'GET /registration/{id} → .data.serviceId'),
+        cskhContractSlot,
+        field('Ngày hiệu lực HĐ (YYYY-MM-DD)', effectiveDateCskh)),
+      UI.h('div', { class: 'field-grid-3' },
+        cskhDeploySlot,
+        field('District ID (địa chỉ thanh toán)', districtIdCskhInput, 'ward-id của billing address — vd: 1000009712'),
+        field('Auto Call', autoCallCskhSelect)),
+      UI.h('fieldset', { style: 'border: 1px solid var(--ink-700); border-radius: 4px; padding: 10px; margin: 8px 0;' },
+        UI.h('legend', { class: 'hint', style: 'padding: 0 6px;' }, 'Nền tảng & Đối tác (quyết định danh sách số)'),
+        UI.h('div', { class: 'field-grid-3' },
+          field('Nền tảng', platformCskhSelect, '81=VOIP, 82=Brandname'),
+          field('Đối tác triển khai', partnerCskhSelect, 'ViHAT=2 (đã xác nhận có số)'),
+          field('Gói Profile (CC/SPS)', packageProfileCskhInput, '1 = KH bình thường'))),
+      UI.h('label', { class: 'd-block' },
+        UI.h('div', { class: 'field-label' },
+          UI.h('span', { class: 'lbl' }, 'Số CSKH'),
+          phoneCskhStatus),
+        UI.h('div', { style: 'margin-top: 6px;' }, loadPhoneCskhButton),
+        UI.h('div', { style: 'margin-top: 8px;' }, phoneCskhListBody)),
+      UI.h('fieldset', { style: 'border: 1px solid var(--ink-700); border-radius: 4px; padding: 10px; margin: 8px 0;' },
+        UI.h('legend', { class: 'hint', style: 'padding: 0 6px;' }, 'Cấu hình kết nối (SIP)'),
+        UI.h('div', { class: 'field-grid-3' },
+          field('IP kết nối', ipMainCskhInput),
+          field('Port SIP', portMainCskhInput),
+          field('Loại đường truyền', ipMainTypeCskhSelect),
+          field('Hạn mức sử dụng (VNĐ)', maxValueCskhInput))),
+      UI.h('label', { class: 'd-block' },
+        UI.h('div', { class: 'field-label' }, UI.h('span', { class: 'lbl' }, 'Giá bán theo hướng gọi (JSON)')),
+        priceJsonCskhInput,
+        UI.h('span', { class: 'hint' }, 'lấy sẵn từ cấu hình đầu số — để [] nếu không có')),
+      UI.h('fieldset', { style: 'border: 1px solid var(--ink-700); border-radius: 4px; padding: 10px; margin: 8px 0;' },
+        UI.h('legend', { class: 'hint', style: 'padding: 0 6px;' }, 'Liên hệ thu cước'),
+        UI.h('div', { class: 'field-grid-3' },
+          field('Tên', billingCskhName),
+          field('SĐT', billingCskhPhone),
+          field('Email', billingCskhEmail))),
+      UI.h('fieldset', { style: 'border: 1px solid var(--ink-700); border-radius: 4px; padding: 10px; margin: 8px 0;' },
+        UI.h('legend', { class: 'hint', style: 'padding: 0 6px;' }, 'Liên hệ kỹ thuật'),
+        UI.h('div', { class: 'field-grid-3' },
+          field('Tên', techCskhName),
+          field('SĐT', techCskhPhone),
+          field('Email', techCskhEmail))),
+      UI.h('label', { class: 'd-flex align-items-center gap-2', style: 'padding: 10px 0; border-top: 1px solid var(--ink-700); margin-top: 6px;' },
+        autoApproveCskh,
+        UI.h('span', { class: 'lbl' }, 'Tự động BGĐ duyệt + CM ghi nhận sau khi tạo xong'),
+        UI.h('span', { class: 'hint' }, '— hành động thật, mặc định tắt'),
+        UI.h('span', null, 'BGĐ duyệt:'),
+        bgdApproverCskhInput,
+        UI.h('span', null, '  CM duyệt:'),
+        cmApproverCskh),
+      statusCskh);
+    // ── end CSKH form ───────────────────────────────────────────────────────────
+
     const submitButton = UI.h('button', {
       class: 'btn-generate',
       type: 'button',
@@ -1940,6 +2365,11 @@
         v1800DeploySlot.appendChild(sharedDeploySection);
         body.appendChild(form1800Body);
         footer.appendChild(submit1800Button);
+      } else if (meta.value === 'cskh') {
+        cskhContractSlot.appendChild(sharedContractSection);
+        cskhDeploySlot.appendChild(sharedDeploySection);
+        body.appendChild(formCskhBody);
+        footer.appendChild(submitCskhButton);
       } else {
         phoneContractSlot.appendChild(sharedContractSection);
         phoneDeploySlot.appendChild(sharedDeploySection);

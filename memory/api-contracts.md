@@ -571,3 +571,98 @@ Implemented as `CreateRandomCustomerGenerator.java` (`customer.create-random`) �
 4. Re-verify `successRate` valid range (0-99 per URD doc vs 0-100 assumed elsewhere) directly against this API.
 5. Capture one real success response body to know the created-ID field name.
 6. Confirm whether `tppCanApproval`/`usersCanApproval` ever legitimately hold more than one entry.
+
+---
+
+## API contract: YCHD Đầu số thoại — CSKH (serviceGroup=1, serviceType=8) — ✅ CAPTURED LIVE 2026-11-26
+
+Reverse-engineered end-to-end by driving the real "Tạo YCHD → CSKH" flow in STG (Sale `thitlh@fpt.com`, cơ hội `CH00085659`, KH `FTI260762`/MST `524242636225`, registrationId `97178`, serviceId `101345`). Implemented as 4 generators in `generator/impl/service/ivoice/cskh/` (category "CSKH"): `cskh.get-phone-booked`, `cskh.insert-registration`, `cskh.approve-registration`, `cskh.cm-execute`.
+
+**CSKH khác hẳn 1800/1900 — KHÔNG chọn số theo Tỉnh+MST mà theo Nền tảng + Đối tác:**
+
+- `serviceGroup=1`, `serviceType=8` (xác nhận qua `GET /opportunities/CH00085659/can-create-registration?serviceGroup=1&serviceType=8` và `GET {bms}/registration/97178` → `serviceType:8, serviceTypeName:"CSKH"`).
+- **Nền tảng (platform):** combobox `VOIP` / `Brandname` (từ code-details). Mã composite dùng trong cả phone-booked VÀ `configInfo.platform`: **VOIP=81, Brandname=82** (= serviceType 8 ghép platform index).
+- **Đối tác triển khai (partnerId):** bắt buộc. `GET /sm/v2/ivoice/api/system-setting/code-details?cmCode=PartnerNamePostgre`. Thấy: Telesales=1, ViHAT=2, ITS=3, SouthTelecomHCM=4, SouthTelecomHNI=5, VNTEL, LEEON, INTERITSHNI/HCM, LEEONHNI/HCM, GTELHCM/HNI, STEL177.
+- **Số CSKH phải được book trước** ở màn đầu số cho đúng cặp (platform + partner + MST). Số không gắn với Tỉnh.
+
+### 1) get-phone-booked-number (CSKH) — `cskh.get-phone-booked`
+`POST /sm/v2/ivoice/api/registration/get-phone-booked-number`
+```json
+{"serviceType":81,"taxID":"524242636225","regDetailId":-1,"partnerId":2}
+```
+⚠️ `serviceType` ở đây là **mã platform (81/82)**, KHÔNG phải 8. KHÔNG có `locationId` (khác 1800/1900). Response `data[]`: `{id, phoneNumber, subcriberCharge, methodBillingType, taxID, userBookingInfo, ...}`. Rỗng nếu chưa book cho đúng partner (Telesales=1 trả `[]`, ViHAT=2 trả số `0396748428`).
+
+### 2) insert-registration-iframe (CSKH) — `cskh.insert-registration`, step 2
+`POST /sm/v2/ivoice/api/registration/insert-registration-iframe` (SM token). Payload thật đã bắt:
+```json
+{
+  "id":0,"opportunityCode":"CH00085659","refCode":"CH00085659_97178","contractBMS":"",
+  "serviceGroup":1,"serviceType":8,"taxId":"524242636225",
+  "promotionJson":"[]","deviceJson":"[]","switchboardJson":"[]","cp1900Json":"[]",
+  "priceJson":"[{\"platForm\":\"VoIP\",\"partner\":\"ViHAT\",\"operator\":\"VinaPhone\",\"priceType\":\"Ngoại mạng\",\"unitPrice\":100000,\"minutesFrom\":0,\"minutesTo\":50}]",
+  "isManyPrices":0,
+  "registrationDetails":[{
+    "id":1,"isNew":1,"regDetailCode":"CH00085659-1","serviceGroup":1,"serviceType":8,
+    "locationId":8,"locationName":"Thành phố Hồ Chí Minh","wardId":1000009697,"wardName":"Phường An Đông",
+    "locationNumber":"22 Nguyễn Văn A","deployDate":"2026-11-25T17:00:00.000Z","autoCall":0,
+    "contactName":"qc","contactEmail":"vanmtt3@fpt.com","contactPhone":"0345677875",
+    "configInfo":{"id":0,"connectType":0,"ipMain":"1.2.2.3","portMain":"5060","ipMainType":1,
+      "destinationNumber":0,"delayTime":0,"maxCall":0,"maxValue":2000000,
+      "partnerId":2,"platform":81,"packageProfile":1},
+    "phones":[{"id":0,"regDetailId":1,"phoneNumber":"0396748428","objID":null,
+      "subcriberCharge":0,"bookingRequestId":null,"callDirectionId":null}],
+    "cpPercents":[]
+  }]
+}
+```
+Khác 1900 (top-level): thêm `priceJson` (mảng giá theo hướng gọi, auto-populate từ cấu hình đầu số — không có API get-price riêng, bundle sẵn) + `isManyPrices`. Khác (registrationDetails): thêm `regDetailCode` = `{opportunityCode}-{index}`. `configInfo` ĐƠN GIẢN hơn 1900 nhiều — chỉ `partnerId/platform(81)/packageProfile/ipMain/portMain/ipMainType/maxValue/destinationNumber/delayTime/maxCall/connectType`; KHÔNG có voiceDirectionOpen/forwardType/ipbK1-2/portMedia/allowHighCost. `cp1900Json` giữ "[]". Generator để `priceJson` là param (default "[]").
+- Enum form: Loại đường truyền (ipMainType) = Public=1 / MPLS=2. Gói Profile (packageProfile) default 1 ("KH bình thường 10sps–100cc"). Auto Call default 0 (Không).
+
+### 3) BMS registration (final) — `cskh.insert-registration`, step 3
+`POST {bms}/registration/{registrationId}` — body **y hệt 1900** (cùng endpoint), chỉ khác data (serviceId=101345, feeContract/monthlyFee...). listBillingContact/listTechContact pre-fill từ `GET /registration/{id}`.
+- 🐛 **listDeployAddress phải có `isSelected:true`** — nếu rỗng/false → `400 REGIST_VALIDATE_NO_DEPLOY "Phải nhập ít nhất một địa chỉ triển khai"`. Web UI để `isSelected:false` nên bấm "Xác nhận & Gửi" ngay bị lỗi này (quirk UI, không phải backend). Generator tự build deployAddress với `isSelected:true`, `district`=wardId, `serviceGroup:1/serviceType:8`, `isAddressOfIntegrated:true` → qua validate. Shape deployAddress xác nhận từ GET sau sync: `{address, fullAddress, location, district(=wardId), contactName/Email/Phone, serviceGroup, serviceType, isAddressOfIntegrated:true, isSelected}`.
+
+### Flow UI (tham khảo, để wire dedicated form sau)
+`Chi tiết cơ hội → "Yêu cầu tạo HĐ" → chọn radio dịch vụ → Xác nhận (x2, mint registrationId trong refCode CH..._{regId}) → wizard 3 bước: 1 Thông tin chung / 2 Thông tin dịch vụ (nút "Thêm chi tiết" mở iframe SM /sm/v2/ivoice/registration/iframecreate?ServiceType=8&RefCode=...) / 3 Xác nhận & Gửi`. Iframe CSKH có các mục: Phí khởi tạo · Dịch vụ liên kết · **Danh sách triển khai** (dialog "TẠO PHIẾU TRIỂN KHAI": Nền tảng, Auto Call, địa chỉ, đối tác, IP Main, Loại đường truyền, Gói Profile, chọn số đã book) · **Danh sách giá bán** (auto từ số) · Chiết khấu · Thiết bị · **Tổng đài**. Nút "Tiếp tục" của iframe = fire insert-registration-iframe.
+
+### UI trang Ivoice (`app.js`) — ✅ ĐÃ WIRE 2026-11-26
+- `SERVICE_TYPES` entry `cskh` → `supported:true`. Form riêng `formCskhBody` (render qua nhánh `meta.value==='cskh'` trong `renderBodyForType`, slot `cskhContractSlot`/`cskhDeploySlot` tái dùng sharedContract/sharedDeploy như 1800).
+- Khác 1800/1900: picker **Nền tảng (platformCskhSelect 81/82) + Đối tác (partnerCskhSelect, `CSKH_PARTNERS` id 1-14, default ViHAT=2)** → nút "Tải số CSKH" gọi `cskh.get-phone-booked`. Thêm field Gói Profile, Loại đường truyền (Public=1/MPLS=2), Giá bán JSON (`priceJsonCskhInput`).
+- Submit `submitCskhButton` → `cskh.insert-registration`; checkbox auto → `runCskhAutoApprove` = `cskh.approve-registration` → `cskh.cm-execute` → `registration.approve-cm` (sync BMS v2). serviceId auto-fetch qua `fetchServiceIdCskh`.
+- ⚠️ `CSKH_PARTNERS` id: chỉ Telesales=1, ViHAT=2 xác nhận live; id 3-14 suy theo thứ tự danh sách code-details PartnerNamePostgre — kiểm lại nếu "Tải số CSKH" trả rỗng cho partner lạ.
+- Smoke-test local 2026-11-26: app chạy, 4 generator cskh.* registered, form render không lỗi JS.
+
+### ✅ ĐÃ CHẠY END-TO-END LIVE 2026-11-26 (qua tool, cơ hội mới CH00086706)
+Flow thật đã verify (KH FTI260762, số book 0396748428 VOIP/ViHAT):
+1. `opportunity.api` tạo cơ hội CSKH mới (services "1:8") → **CH00086706**.
+2. `evaluation.evaluate` (TPP AnhDTT12, criteriaToken=creator) + `opportunity.stage-advance` (×4 → 100%/Kết thúc).
+3. **Phát hiện:** sau stage-advance, `ivoice.lookup-opportunity` trả thẳng `registrationId=100812` + `refCode=CH00086706_100812` + `serviceId=104979` — **KHÔNG cần bấm "Yêu cầu tạo HĐ" trên browser** để mint (registration đã tồn tại khi cơ hội tới stage cuối). ⚠️ Browser direct-hit `/bmsv2/opportunity/detail/{CH}` hay 403 do token SPA timing — phải vào `/bmsv2` (root) bootstrap trước; nhưng qua API/tool thì không vướng.
+4. `cskh.insert-registration` → insert-registration-iframe (SM) **HTTP 200** + BMS POST /registration/100812 isUpdateTemp=false **HTTP 200** → status "Chờ BGĐ duyệt". listDeployAddress isSelected=true qua validate OK (không REGIST_VALIDATE_NO_DEPLOY).
+5. `cskh.approve-registration` (BGĐ DuyVM4) → **regCode CMR2615825** (approve-registration 200, lookup regCode retry 2 lần).
+6. `cskh.cm-execute` (new-CM demstaff.am) → create-contract **timeout curl exit=28 ở 20s** (new-CM CSKH chậm) NHƯNG contract vẫn tạo server-side. → **đã nâng TIMEOUT_SECONDS 20→60 trong CmCskhExecuteGenerator** để lần đầu sạch.
+7. `registration.approve-cm` (old-CM) thấy contract **SGVO18050** đã có → UpdateStatus=4 "Hoàn Thành".
+8. State cuối BMS: `regCode=CMR2615825, contractNo=SGVO18050, bgdApprovalStatus=1, statusRegistName="Chờ DEM duyệt"`.
+- Token qua tool: `auth.get-token-api`/`auth.get-sm-token-api` → `data.accessToken`; `auth.get-new-cm-token`/`auth.get-cm-token` → `data.cmToken`. SM token cần gọi get-token-api (BMS) trước để cache CAS TGT.
+- ⚠️ Tránh tạo >1 cơ hội CSKH cùng KH trong thời gian ngắn — dễ trip dedup (evaluate trả isDuplicated=true). CH00086706 không bị chặn nhưng là rủi ro.
+
+### 🐛 new-CM create-contract CSKH trả lỗi/timeout DÙ contract đã tạo — ✅ FIX 2026-11-26
+Triệu chứng (user gặp trên UI auto-flow): `✗ new-CM lỗi CMR2615826: new-cm API POST error: Lỗi không xác định. Vui lòng liên hệ admin!`. Điều tra: GET detail CMR2615826 cho thấy **contract SGVO18051 ĐÃ được tạo** (isContractTemp=2) — tức create-contract chạy OK server-side nhưng **trả response lỗi** ("Lỗi không xác định") hoặc **curl timeout exit=28** (new-CM CSKH chậm, xem CMR2615825). `cskh.cm-execute` cũ *throw* ngay → UI đặt `newCmDone=false` → **bỏ bước old-CM sync** (bước finalize thật) → YCHD kẹt ở "có contract nhưng chưa Hoàn Thành".
+- **Fix generator `CmCskhExecuteGenerator`:** (1) coi là "contract đã tạo" nếu `contractNo` có HOẶC `isContractTemp>=1` → bỏ qua create-contract (không gọi lại → tránh lỗi); (2) nếu create-contract POST throw → chờ 3s, GET detail lại, nếu contract đã tồn tại thì coi như thành công, đi tiếp (không throw); (3) check-registration + update-status thành **best-effort** (báo lỗi "Phiếu đã hoàn thành"/404 → log + bỏ qua, miễn contract đã tạo). TIMEOUT_SECONDS=60.
+- **Fix UI `runCskhAutoApprove`:** chạy `registration.approve-cm` (old-CM, bước finalize thật: UpdateStatus=4 + sync BMS v2) **kể cả khi new-CM báo lỗi** (bỏ gate `newCmDone`) — old-CM tự xử lý "contract đã tạo → chỉ UpdateStatus" hoặc tạo mới nếu chưa có.
+- Verify 2026-11-26: cm-execute CMR2615826 (bản fix) → trả success (contractNo SGVO18051, status 4, "Hoàn thành"), không còn throw. Record kẹt đã gỡ qua old-CM (SGVO18051 "Hoàn Thành").
+- Note: old-CM = gwcm (`ftms-stag.fpt.net/gwcm/contract/api/v1/Registration/*`) là bên finalize thật; new-CM create-contract chủ yếu để tạo contract + đồng bộ DEM (xem [[newcm-dem-bms-sync]]).
+
+### 🔴 CSKH kẹt "Chờ DEM duyệt" — create-contract KHÔNG mint phụ lục/sync DEM (ĐANG MỞ, 2026-11-26)
+Chạy sạch 1 lần (CMR2615827, số 0396748459, HĐ SGVO18052) vẫn kẹt. Điều tra:
+- Đồng bộ DEM→BMS + sinh phụ lục (`cmrSubContractNo`) là **hệ quả server-side của new-CM `create-contract`** (memory [[newcm-dem-bms-sync]]). State SYNCED = `isContractTemp=2 + cmrSubContractNo có + noteOfApprover có`.
+- CSKH CMR2615825/826/827: `isContractTemp=2` nhưng **cmrSubContractNo=None, noteOfApprover=None** → create-contract chỉ tạo HĐ shell, KHÔNG hoàn tất mint PL + sync DEM → BMS kẹt "Chờ DEM duyệt". new-CM báo "Lỗi không xác định" (826) hoặc timeout (825) ở create-contract.
+- So sánh: `CMR2615823` (serviceType 11012) `cmrSubContractNo=SGLC02167-001` → "Hoàn Thành". Voice khác cũng có PL (`SGVO17999-001` trong memory). → **1800/1900 dùng y hệt `cm-execute` mà hoàn tất** (user xác nhận), nên lỗi KHÔNG ở generator mà ở **dữ liệu YCHD CSKH (`cskh.insert-registration`) làm new-CM create-contract lỗi server-side**. Record kẹt KHÔNG sửa retroactive (gọi lại create-contract → 400 "Phiếu đã hoàn thành").
+- **Fix generator đã vào (đúng nhưng chưa đủ):** guard theo `isContractTemp==2 && cmrSubContractNo` (KHÔNG theo contractNo — tránh skip create-contract); TIMEOUT 60s; tolerate lỗi "đã hoàn thành"/timeout; UI chạy old-CM bù kể cả khi new-CM lỗi.
+- **CÒN LẠI (cần làm):** tìm field nào trong CSKH insert payload khiến create-contract lỗi (so với 1800 payload + [[verbatim-api-capture-method]]: cần cURL 1 lần DEM-approve CSKH THÀNH CÔNG để đối chiếu). new-CM UI chặn automation (anti-devtools) nên phải capture tay. DEM flow thật: checkRegistration(newStatus:4) → createContractRegistration({cmrTransactionId,noteOfApprover}) → updateStatusRegistration({status:4}).
+
+### 🛠 Fix "không khóa record khi create-contract lỗi" (user directive 2026-11-26)
+Vấn đề phụ: bản cm-execute trước (tolerate lỗi → vẫn update-status=4) khiến record kẹt bị **khóa** (status=4 nhưng chưa sync DEM) → duyệt DEM tay cũng không được ("Phiếu đã hoàn thành"). CMR2615827/CH00086707_100813 đã dính (new-CM status=4, cmrSubContractNo=None, noteOfApprover=None; BMS cmApprovalStatus=2 "Chờ DEM duyệt") — **không cứu được**.
+- **Fix `CmCskhExecuteGenerator` (đổi thứ tự theo DEM flow thật):** check-registration(newStatus:4) → create-contract → **verify**: GET lại detail, chỉ coi THÀNH CÔNG nếu `cmrSubContractNo` HOẶC `noteOfApprover` đã set. Nếu CHƯA finalize → **throw, KHÔNG update-status** (record không bị khóa status=4, duyệt DEM tay được). Chỉ update-status=4 khi đã finalize.
+- **Fix UI `runCskhAutoApprove`:** nếu cm-execute lỗi → **KHÔNG chạy old-CM** `registration.approve-cm` (nó UpdateStatus=4 sẽ khóa), hiện hint "duyệt DEM tay".
+- **Vẫn CÒN mở:** vì sao tool's create-contract CSKH lỗi server-side ("Lỗi không xác định") trong khi 1800/1900 OK — chưa có YCHD CSKH nào thật sự lên "DEM phê duyệt"/Hoàn thành qua tool để đối chiếu. Cần: cURL 1 lần duyệt DEM CSKH thành công, hoặc xác nhận lỗi backend/spec CSKH với team.
+- **Verify bản vá 2026-11-26 (CH00086709/CMR2615828, số 0396748461):** create-contract vẫn lỗi "Lỗi không xác định" (CỐ ĐỊNH cho CSKH qua API) nhưng tool DỪNG SẠCH — new-CM giữ `status=1 "Tạo mới"` (HĐ tạm SGVO18053, KHÔNG status=4) → KHÔNG bị khóa, duyệt DEM tay được. Đối chiếu bản cũ CMR2615827 = status=4 "Hoàn Thành" (khóa cứng). ⇒ bản vá đạt mục tiêu "không khóa record". Lỗi create-contract CSKH qua API vẫn chưa fix được (chờ cURL DEM-approve CSKH thành công để đối chiếu field).
