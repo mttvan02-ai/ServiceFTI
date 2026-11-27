@@ -387,6 +387,17 @@
     ivoiceHost.appendChild(wrapper);
   }
 
+  // Trang SM (#sm-page-host): tái dùng card ivoice nhưng lọc chỉ hiện dịch vụ SM
+  // (OnCallCX... nhóm Tổng đài). Cùng infra lookup cơ hội + SM token.
+  function renderSmPage() {
+    const smHost = document.getElementById('sm-page-host');
+    if (!smHost || smHost.childElementCount > 0) return; // already mounted
+    const wrapper = document.createElement('div');
+    wrapper.className = 'master-grid';
+    wrapper.appendChild(mountIvoiceCard({ pageKind: 'sm' }));
+    smHost.appendChild(wrapper);
+  }
+
   /**
    * Simple 2-page router (Home "/" / Ivoice "/ivoice") — real address-bar
    * URL via the History API (user request 2026-09-03), not just a JS
@@ -402,6 +413,7 @@
   function showPageFor(pathname) {
     const active = SERVICE_PAGES.find(s => pathname === '/' + s) || null;
     if (active === 'ivoice') renderIvoicePage();
+    if (active === 'sm') renderSmPage();
 
     // Hiện/ẩn home
     const isHome = !active;
@@ -697,7 +709,13 @@
    * memory/api-contracts.md — mọi thứ ở đây chỉ TIẾP TỤC 1 registration đã
    * tồn tại sẵn, chưa tự tạo mới từ đầu được).
    */
-  function mountIvoiceCard() {
+  function mountIvoiceCard(opts) {
+    opts = opts || {};
+    // pageKind: 'ivoice' (phone/1800/1900/cskh) hoặc 'sm' (OnCallCX... — nhóm Tổng đài).
+    // Cùng 1 card dùng chung infra (lookup cơ hội, SM token) nhưng lọc dropdown
+    // dịch vụ theo trang, để trang SM (#sm-page-host) không lẫn dịch vụ ivoice.
+    const pageKind = opts.pageKind || 'ivoice';
+    const SM_SERVICE_VALUES = ['oncallcx'];
     const field = (labelText, input, hint) => UI.h('label', { class: 'd-block' },
       UI.h('div', { class: 'field-label' },
         UI.h('span', { class: 'lbl' }, labelText),
@@ -738,12 +756,22 @@
         serviceType: '8',
         platform: '81', platformLabel: 'VOIP',
         typeDocContract: 1, typeDocContractLabel: 'Hợp đồng' },
+      // OnCallCX (SM, Tổng đài) — serviceGroup=13000 / serviceType=13007. Reverse-
+      // engineer live 2026-11-27 (xem memory/api-contracts.md §SM). Đi cùng luồng
+      // bms-service như CSKH. GET-side đã wire; POST tạo YCHD chờ capture payload.
+      { value: 'oncallcx', label: 'OnCallCX (SM)', supported: true,
+        serviceGroup: '13000', serviceGroupLabel: 'Tổng đài',
+        serviceType: '13007',
+        typeDocContract: 1, typeDocContractLabel: 'Hợp đồng' },
     ];
 
     const saleInput = UI.h('input', { class: 'app-input', type: 'text', placeholder: 'vd: thitlh' });
     const opportunityCodeInput = UI.h('input', { class: 'app-input', type: 'text', placeholder: 'CH00085410' });
+    const VISIBLE_SERVICE_TYPES = SERVICE_TYPES.filter((t) =>
+      pageKind === 'sm' ? SM_SERVICE_VALUES.includes(t.value) : !SM_SERVICE_VALUES.includes(t.value));
     const typeSelect = UI.h('select', { class: 'app-select' },
-      ...SERVICE_TYPES.map((t) => UI.h('option', { value: t.value }, t.label)));
+      ...VISIBLE_SERVICE_TYPES.map((t) => UI.h('option', { value: t.value }, t.label)));
+    if (VISIBLE_SERVICE_TYPES.length) typeSelect.value = VISIBLE_SERVICE_TYPES[0].value;
     // Disabled (user request 2026-09-07): purely auto-derived from Mã cơ
     // hội via ivoice.lookup-opportunity — nothing to type by hand. Still
     // settable programmatically (disabled only blocks USER edits, not JS
@@ -819,6 +847,8 @@
           fetchServiceId1800(saleEmail, d.registrationId).catch(() => {});
         } else if (svcVal === 'cskh' && d.registrationId) {
           fetchServiceIdCskh(saleEmail, d.registrationId).catch(() => {});
+        } else if (svcVal === 'oncallcx') {
+          prepareOncallcxOnLookup(saleEmail, d).catch(() => {});
         }
       } catch (err) {
         oppLookupStatus.textContent = '✗ Tra cứu lỗi: ' + (err.message || err);
@@ -2103,6 +2133,147 @@
       statusCskh);
     // ── end CSKH form ───────────────────────────────────────────────────────────
 
+    // ── OnCallCX (SM) form ──────────────────────────────────────────────────────
+    // serviceGroup=13000 (Tổng đài) / serviceType=13007 (OnCallCX). Capture live
+    // 2026-11-27 (xem memory/api-contracts.md §SM). GET-side đã wire (gói / validate
+    // email / đầu số theo HĐ Voice). POST tạo YCHD CHƯA wire — còn chờ capture payload
+    // (tab "Đầu số đính kèm" cần 1 HĐ Voice iVoice còn đầu số của đúng KH).
+    const btnSmStyle = 'margin-top: 6px; padding: 6px 14px; font-size: 12px; width: auto;';
+    const statusOncallcx = UI.h('div', { class: 'gen-log' });
+    function addLineOncallcx() { const p = UI.h('p', { class: 'log-line' }); statusOncallcx.appendChild(p); return p; }
+
+    let oncallPacks = [];
+    const packOncallSelect = UI.h('select', { class: 'app-select' },
+      UI.h('option', { value: '' }, '— bấm "Tải gói dịch vụ" —'));
+    const packOncallStatus = UI.h('span', { class: 'hint' }, '');
+    const loadPacksOncallButton = UI.h('button', {
+      type: 'button', class: 'btn-generate', style: btnSmStyle,
+      onclick: async () => {
+        const saleEmail = currentSaleEmail();
+        if (!saleEmail) { packOncallStatus.textContent = '✗ Điền Tài khoản Sale'; return; }
+        loadPacksOncallButton.disabled = true;
+        try {
+          packOncallStatus.textContent = '⏳ Lấy SM token…';
+          const { token: smToken } = await getCachedOrFreshSmToken(saleEmail);
+          packOncallStatus.textContent = '⏳ Tải gói dịch vụ…';
+          const resp = await api.generate('sm.service-packs', { smToken, serviceType: 13007, serviceGroup: 13000 });
+          oncallPacks = resp.result.data.packs || [];
+          packOncallSelect.innerHTML = '';
+          packOncallSelect.appendChild(UI.h('option', { value: '' }, '— chọn gói —'));
+          oncallPacks.forEach((pk, i) => {
+            const o = pk.other || {};
+            const price = (o.unitPrice || 0).toLocaleString('vi-VN');
+            packOncallSelect.appendChild(UI.h('option', { value: String(i) }, `${pk.name} — ${price}đ/th`));
+          });
+          packOncallStatus.textContent = `✓ ${oncallPacks.length} gói`;
+        } catch (err) { packOncallStatus.textContent = '✗ ' + (err.message || err); }
+        finally { loadPacksOncallButton.disabled = false; }
+      },
+    }, 'Tải gói dịch vụ');
+
+    const qtyOncallInput    = UI.h('input', { class: 'app-input', type: 'number', value: '1' });
+    const monthsOncallInput = UI.h('input', { class: 'app-input', type: 'number', value: '1' });
+    const vatOncallInput    = UI.h('input', { class: 'app-input', type: 'number', value: '10' });
+
+    const emailCrmOncallInput  = UI.h('input', { class: 'app-input', type: 'email', placeholder: 'email user CRM/CX' });
+    const emailCrmOncallStatus = UI.h('span', { class: 'hint' }, '');
+    const validateEmailOncallButton = UI.h('button', {
+      type: 'button', class: 'btn-generate', style: btnSmStyle,
+      onclick: async () => {
+        const saleEmail = currentSaleEmail();
+        const refCode = refCodeInput.value.trim();
+        const email = emailCrmOncallInput.value.trim();
+        if (!saleEmail || !refCode || !email) { emailCrmOncallStatus.textContent = '✗ Cần Sale + RefCode (tra cứu) + Email'; return; }
+        validateEmailOncallButton.disabled = true;
+        try {
+          const { token: smToken } = await getCachedOrFreshSmToken(saleEmail);
+          const resp = await api.generate('sm.oncall-validate-email', { smToken, refCode, email });
+          const d = resp.result.data;
+          emailCrmOncallStatus.textContent = d.isValid ? '✓ Email hợp lệ' : ('✗ ' + (d.message || 'không hợp lệ'));
+        } catch (err) { emailCrmOncallStatus.textContent = '✗ ' + (err.message || err); }
+        finally { validateEmailOncallButton.disabled = false; }
+      },
+    }, 'Validate email');
+
+    const modemOncallInput = UI.h('input', { class: 'app-input', type: 'text', value: 'KH-stg', placeholder: 'thông tin modem kênh truyền tại site KHG' });
+
+    let oncallPhones = [];
+    const voiceContractOncallInput = UI.h('input', { class: 'app-input', type: 'text', placeholder: 'vd SGVO18050 — HĐ iVoice còn đầu số của KH' });
+    const phoneOncallStatus = UI.h('span', { class: 'hint' }, '');
+    const phoneOncallListBody = UI.h('div', { style: 'margin-top:6px;' });
+    const loadPhoneOncallButton = UI.h('button', {
+      type: 'button', class: 'btn-generate', style: btnSmStyle,
+      onclick: async () => {
+        const saleEmail = currentSaleEmail();
+        const contract = voiceContractOncallInput.value.trim();
+        if (!saleEmail || !contract) { phoneOncallStatus.textContent = '✗ Cần Sale + Số HĐ Voice'; return; }
+        loadPhoneOncallButton.disabled = true;
+        try {
+          const { token: smToken } = await getCachedOrFreshSmToken(saleEmail);
+          phoneOncallStatus.textContent = '⏳ Tải đầu số…';
+          const resp = await api.generate('sm.oncall-phone-by-contract', { smToken, contract });
+          oncallPhones = resp.result.data.phones || [];
+          phoneOncallListBody.innerHTML = '';
+          if (!oncallPhones.length) {
+            phoneOncallStatus.textContent = '✗ HĐ không còn đầu số (hoặc sai KH)';
+          } else {
+            phoneOncallStatus.textContent = `✓ ${oncallPhones.length} đầu số`;
+            oncallPhones.forEach((ph) => phoneOncallListBody.appendChild(
+              UI.h('div', { class: 'hint' }, ph.phoneNumber || JSON.stringify(ph))));
+          }
+        } catch (err) { phoneOncallStatus.textContent = '✗ ' + (err.message || err); }
+        finally { loadPhoneOncallButton.disabled = false; }
+      },
+    }, 'Tải đầu số');
+
+    const submitOncallcxButton = UI.h('button', {
+      class: 'btn-generate', type: 'button', disabled: true,
+      onclick: () => { addLineOncallcx().textContent = 'ℹ️ Tạo YCHD OnCallCX (POST) chưa wire — chờ capture payload (cần HĐ Voice còn đầu số).'; },
+    }, 'Tạo YCHD OnCallCX (chờ capture POST)');
+
+    // Auto-prepare khi tra cứu cơ hội (oncallcx): tự điền Email user CRM/CX từ email
+    // KH, tự tải gói dịch vụ, tự validate email → giảm thao tác tay. Đầu số KHÔNG tự
+    // load được (cần HĐ Voice iVoice còn số của KH — ràng buộc nghiệp vụ).
+    async function prepareOncallcxOnLookup(saleEmail, d) {
+      try {
+        if (!emailCrmOncallInput.value.trim() && d && d.customerId) {
+          const { token } = await getCachedOrFreshToken(saleEmail);
+          const cust = await api.proxy('customners/' + d.customerId, token).catch(() => null);
+          const c = cust && (cust.data || cust);
+          const email = c && (c.email || c.contactEmail || c.emailCusToReceiveContract);
+          if (email) emailCrmOncallInput.value = email;
+        }
+      } catch (_) { /* silent */ }
+      try { loadPacksOncallButton.click(); } catch (_) {}
+      if (emailCrmOncallInput.value.trim()) { try { validateEmailOncallButton.click(); } catch (_) {} }
+    }
+
+    const formOncallcxBody = UI.h('div', { class: 'gen-body' },
+      UI.h('div', { class: 'hint', style: 'margin-bottom:8px;' },
+        'OnCallCX — Nhóm "Tổng đài" (serviceGroup 13000) / serviceType 13007. Tra cứu Mã cơ hội ở trên để lấy RefCode/MST. GET-side đã wire; tạo YCHD (POST) đang chờ capture — cần 1 HĐ Voice iVoice còn đầu số của KH.'),
+      UI.h('label', { class: 'd-block' },
+        UI.h('div', { class: 'field-label' }, UI.h('span', { class: 'lbl' }, 'Gói dịch vụ'), packOncallStatus),
+        UI.h('div', { style: 'margin:6px 0;' }, loadPacksOncallButton),
+        packOncallSelect),
+      UI.h('div', { class: 'field-grid-3' },
+        field('Số lượng gói', qtyOncallInput),
+        field('Số tháng sử dụng', monthsOncallInput),
+        field('VAT (%)', vatOncallInput)),
+      UI.h('fieldset', { style: 'border: 1px solid var(--ink-700); border-radius: 4px; padding: 10px; margin: 8px 0;' },
+        UI.h('legend', { class: 'hint', style: 'padding: 0 6px;' }, 'Thông số dịch vụ OnCallCX'),
+        UI.h('label', { class: 'd-block' },
+          UI.h('div', { class: 'field-label' }, UI.h('span', { class: 'lbl' }, 'Email user CRM/CX'), emailCrmOncallStatus),
+          emailCrmOncallInput,
+          UI.h('div', { style: 'margin-top:6px;' }, validateEmailOncallButton)),
+        UI.h('div', { style: 'margin-top:8px;' }, field('Thông tin modem (site KHG)', modemOncallInput))),
+      UI.h('label', { class: 'd-block' },
+        UI.h('div', { class: 'field-label' }, UI.h('span', { class: 'lbl' }, 'Đầu số đính kèm (theo HĐ Voice)'), phoneOncallStatus),
+        voiceContractOncallInput,
+        UI.h('div', { style: 'margin:6px 0;' }, loadPhoneOncallButton),
+        phoneOncallListBody),
+      statusOncallcx);
+    // ── end OnCallCX form ───────────────────────────────────────────────────────
+
     const submitButton = UI.h('button', {
       class: 'btn-generate',
       type: 'button',
@@ -2382,6 +2553,9 @@
         cskhDeploySlot.appendChild(sharedDeploySection);
         body.appendChild(formCskhBody);
         footer.appendChild(submitCskhButton);
+      } else if (meta.value === 'oncallcx') {
+        body.appendChild(formOncallcxBody);
+        footer.appendChild(submitOncallcxButton);
       } else {
         phoneContractSlot.appendChild(sharedContractSection);
         phoneDeploySlot.appendChild(sharedDeploySection);
@@ -2421,7 +2595,7 @@
         UI.h('div', { class: 'd-flex justify-content-between align-items-start gap-2' },
           UI.h('div', null,
             UI.h('div', { class: 'gen-eyebrow' }, UI.h('span', { class: 'dot' }), 'Opportunity'),
-            UI.h('h3', { class: 'gen-title' }, 'Ivoice — Tạo yêu cầu HĐ/PL')),
+            UI.h('h3', { class: 'gen-title' }, (pageKind === 'sm' ? 'SM' : 'Ivoice') + ' — Tạo yêu cầu HĐ/PL')),
           genClassEl),
         UI.h('p', { class: 'gen-signature' },
           '✅ Đã xác nhận: Điện thoại cố định (2026-09-07 · CH00085411), 1800 (2026-09-15 · CH00085565). Cần RegistrationId đã tồn tại sẵn (bước "Xác nhận tạo yêu cầu hợp đồng" vẫn thao tác tay).')),

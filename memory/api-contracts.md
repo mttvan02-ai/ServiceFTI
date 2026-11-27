@@ -666,3 +666,94 @@ Vấn đề phụ: bản cm-execute trước (tolerate lỗi → vẫn update-st
 - **Fix UI `runCskhAutoApprove`:** nếu cm-execute lỗi → **KHÔNG chạy old-CM** `registration.approve-cm` (nó UpdateStatus=4 sẽ khóa), hiện hint "duyệt DEM tay".
 - **Vẫn CÒN mở:** vì sao tool's create-contract CSKH lỗi server-side ("Lỗi không xác định") trong khi 1800/1900 OK — chưa có YCHD CSKH nào thật sự lên "DEM phê duyệt"/Hoàn thành qua tool để đối chiếu. Cần: cURL 1 lần duyệt DEM CSKH thành công, hoặc xác nhận lỗi backend/spec CSKH với team.
 - **Verify bản vá 2026-11-26 (CH00086709/CMR2615828, số 0396748461):** create-contract vẫn lỗi "Lỗi không xác định" (CỐ ĐỊNH cho CSKH qua API) nhưng tool DỪNG SẠCH — new-CM giữ `status=1 "Tạo mới"` (HĐ tạm SGVO18053, KHÔNG status=4) → KHÔNG bị khóa, duyệt DEM tay được. Đối chiếu bản cũ CMR2615827 = status=4 "Hoàn Thành" (khóa cứng). ⇒ bản vá đạt mục tiêu "không khóa record". Lỗi create-contract CSKH qua API vẫn chưa fix được (chờ cURL DEM-approve CSKH thành công để đối chiếu field).
+
+## 🔍 DISCOVERY: SM "Service Management" app (sm/v2/sd) — ĐANG KHẢO SÁT 2026-11-27 (CH00086717, sale ThiTLH)
+
+Mục tiêu: dựng tab giống Ivoice nhưng cho **dịch vụ SM** (ứng dụng "SM — Service Management"), UI tạo YCHD.
+
+### Hạ tầng (đã xác nhận LIVE qua browser + app)
+- Web SPA: `https://ftms-stag.fpt.net/sm/v2/` (portal "FTI SMP"), đa app: **SM**(Service Management), IVOICE(Đầu số thoại, đã build), MES(Tin nhắn), LL(Kênh truyền). Chọn app ở dropdown "Ứng dụng".
+- **SM API base**: `https://ftisapi-stag.fpt.net/sm/v2/sd/api` (prefix `sd` = Service Deploy).
+- Auth: **SM token** (app generator `auth.get-sm-token-api` đã mint OK cho ThiTLH, role `FTI-SAL SALESMAN`, division DCS). SPA lưu token ở `localStorage['Auth']` = JSON `{"token":"eyJ...", ...}` (chứa field tên có dấu → phải JSON.parse lấy `.token`, đừng gán cả blob vào header). **TTL ngắn** — hết hạn nhanh, cần mint lại.
+- Các route UI: Khảo sát = `/sm/v2/sd/surveys`, Triển khai = `/sm/v2/sd/deploys`. CẢ HAI list page **KHÔNG có nút "Tạo mới"** → YCHD tạo bằng **API POST** (opportunity-driven), giống ivoice insert-registration (không bấm nút UI).
+
+### Master-data (GET, 200) — `sd/api/master-datas/code-detail-selections?cmCode=<X>`
+- `cmCode=ServiceType` → 11 dịch vụ SM (code · id · name):
+  1·13002 Tổng đài oncall | 2·6002 Hosting/Email | 3·2003 Window 365 | 4·10002 OnMeeting |
+  5·5003 Xinh xinh | 6·9005 SDWan | 8·13007 OncallCX | 9·2001 Office 365 | 10·2002 Azure |
+  11·13009 AutoCall | 12·6007 FPT HI GIO CLOUD  (parentCode=ServiceGroup)
+- `cmCode=RequestType` → 1 Tạo mới · 2 Mua thêm · 3 Nâng cấp · 4 Tạm ngưng · 5 Thanh lý · 6/7 Thay đổi thông tin dịch vụ · 8 Gia hạn · 9 Thay đổi cấu hình dịch vụ
+- `cmCode=DeployResult` (chưa đọc nội dung)
+- List deploy: `GET sd/api/deploys?pageNumber=&pageSize=&fromDate=&toDate=&timeSort=desc&search=&serviceType=-1&statusFilter=` (BẮT BUỘC fromDate/toDate, thiếu → data rỗng). Mẫu row đã thấy: service "Tổng đài oncall", code `SGCX01387` / sub `SGCX01387-001`, requestType "Tạo mới", sale ThiTLH, KH "Test data IDC NhuDTH5".
+
+### CÒN THIẾU (để build generator tạo YCHD)
+- **Endpoint + payload POST tạo YCHD/deploy** cho dịch vụ SM — CHƯA capture (list page không có nút tạo; create là opportunity-driven; cần tìm action "khởi tạo dịch vụ SM" từ cơ hội CH00086717, hoặc user chỉ đường). Cần walk 1 lần tạo thật trên staging để bắt network POST.
+- Response envelope chung: `{ data, success, status:"OK", code:"GEN_200", error, meta:{requestId,traceId,...} }`.
+
+### ⭐ BREAKTHROUGH 2026-11-27: SM (Tổng đài/OncallCX) = CÙNG luồng bms-service registration như ivoice
+- Lookup `GET bms-service/api/opportunities/CH00086717` → refCode CH00086717_100847, customerId FTI260766, taxId 3155458454, **registrationId=100847**.
+- `GET bms-service/api/registration/100847` → `serviceId=105014`, **serviceGroup=13000 "Tổng đài"**, **serviceType=13007 "OnCallCX"**, servicePackId/Name, + TOÀN BỘ field YCHD giống ivoice (hasFormRegistCreate, isUpdateYCTHD, isCancelYCTHD, bgdApprovalStatus, cmApprovalStatus, cmStatus, contractNo, subContractNo, regCode, typeContract, typeDocContract, listBillingContact, listDeployAddress…).
+- ⇒ **YCHD dịch vụ SM Tổng đài đi qua cùng bms-service insert-registration → approve → cm-execute như CSKH**, chỉ khác `serviceGroup=13000` (thay vì 1 "Đầu số thoại"). `sm/v2/sd` (ftisapi SM API) chỉ là view downstream "Triển khai/Khảo sát".
+- Map ServiceType (sm/v2 catalog ↔ BMS serviceType id): **OncallCX=13007**, Tổng đài oncall=13002 (khớp id trong catalog). serviceGroup "Tổng đài"=13000.
+- ⇒ **Plan build tab SM**: nhân bản `cskh/` generators (get-phone-booked? / insert-registration / approve-registration / cm-execute) cho serviceGroup=13000, bắt đầu OncallCX(13007)+Tổng đài oncall(13002). CÒN THIẾU: capture body insert-registration ("Thêm chi tiết") đúng cho Tổng đài (servicePack/config riêng) — chạy 1 lần thật để lấy payload.
+
+### ⭐ CAPTURE 2026-11-27: Form tạo YCHD OnCallCX (serviceGroup=13000, serviceType=13007) — LIVE CH00086717
+Flow web thật đã đi: Chi tiết cơ hội `/bmsv2/opportunity/detail/CH00086717` → nút **"Yêu cầu tạo HĐ"** → dialog chọn dịch vụ (radio "Tổng đài - OnCallCX" / "Tổng đài - Tổng đài OnCall") → Xác nhận (×2, confirm "không tạo được review HĐ") → wizard `/bmsv2/opportunity/create-registration?refCode=CH00086717_100847` (3 bước: Thông tin chung / Thông tin dịch vụ / Xác nhận). Bước 2 có nút **"Thêm chi tiết"** → dialog "đồng bộ tool dịch vụ" → Xác nhận → mở form SM:
+- **Form tạo chi tiết SM**: `GET /sm/v2/sd/deploys/create?ServiceType=13007&RefCode=CH00086717_100847&Contract=&callback=<bmsv2 wizard url>`. Tiêu đề "CHI TIẾT DỊCH VỤ - DỊCH VỤ ONCALLCX". Có: Phí khởi tạo, VAT(10), bảng **Gói dịch vụ** (nút + thêm gói: Tên gói/Định danh/Đơn giá tháng/Chi tiết/Số lượng/License Size/Số tháng/Thành tiền/Liên hệ triển khai), tab Vật tư triển khai, Đầu số đính kèm. Nút **"Tiếp tục"** = POST lưu (→ callback về bmsv2 wizard).
+
+GET nguồn dữ liệu form (SM token, base `ftisapi-stag.fpt.net/sm/v2/sd/api`):
+- `/registrations/init-data?serviceType=13007&refCode=CH00086717_100847` ⚠️ SPA gọi 200 nhưng replay bằng token localStorage['Auth'].token bị **401** (SPA thêm header/token riêng — cần điều tra; có thể là skeleton payload create).
+- `/master-datas/service-packs?serviceType=13007&serviceGroup=13000` → **62 gói**. Mẫu: `{id:219, code:"CX100000109", name:"OncallCX - Voice Contact Center", other:{serviceType:13007, unitPrice:700000, packageIdentifier:1, detail:"2 User - 1 User", isLadderPrice:0, isAddOn:0, isTrial:0, prepaidMonth:0, licenseSize:0, monthUse:1}}`.
+- code-detail-selections `cmCode=`: ServicePackIdentifier, TelephoneNetwork, CallIOFormat, UserCRMRole, DiscountType, HiGioInitType, HiGioS3Region, DoNotCall, InitType, **OncallCXCluster**, **CRMDomainType**, **ServerType**; + `/master-datas/organization-name-selections`.
+- (BMS side, bms-service) khi vào wizard: `GET /registration/sub-contract/can-add?opportunityId=`, `/opportunities/{CH}/can-create-registration?serviceGroup=13000&serviceType=13007`, `/opportunities/{CH}/registration-services`, `/registration/integrated-service-deploy-link?RegistrationId=100847&UseFormContractNo=true`, `/registration/customer-data?customerId=`, rồi **POST /registration/100847** (lưu YCHD nháp bước 1→2).
+
+CÒN THIẾU (mảnh cuối): **body POST submit** của form SM "Tiếp tục" (endpoint `POST sd/api/registrations` hoặc tương tự) — cần điền 1 gói + submit thật để bắt. Sau đó build generator `sm.insert-registration` song song CSKH.
+
+### Cấu trúc form OnCallCX (chi tiết field, capture 2026-11-27) — để build UI + payload
+Form `sm/v2/sd/deploys/create` (OnCallCX) gồm 3 khối:
+1. **Gói dịch vụ / Thông tin triển khai**: Phí khởi tạo, VAT(default 10), bảng gói (chọn từ service-packs; mỗi dòng: Tên gói, Định danh="Normal", Đơn giá/tháng(=unitPrice 700000), Chi tiết(="2 User -1 User"), Số lượng gói(1), License Size(0), Số tháng sử dụng(1), Thành tiền, Liên hệ triển khai[edit], Địa chỉ triển khai[edit]), Tổng tiền/Giảm giá(VNĐ|%)/Thành tiền sau cùng. + Đính kèm file, Ghi chú.
+2. **Thông số dịch vụ** (OnCallCX-specific): Thời gian tạo tenant(disabled), **Email user CRM/CX*** , Company(disabled), Password(disabled, auto-gen), Thời gian lưu file ghi âm(ngày, default 45), Thời gian lưu voice mail(ngày, default 45), **Thông tin modem kênh truyền tại site KHG***, **Khởi tạo Tenant*** (default "Tạo mới Tenant").
+3. **Tab "Đầu số đính kèm"** (BẮT BUỘC ≥1 dòng, validate "Vui lòng thêm ít nhất một đầu số đính kèm"): cột Nhà mạng(TelephoneNetwork), Số HĐ Voice, Đầu số đính kèm, Ip Host, Port, Định dạng gọi vào/ra(CallIOFormat), Thông tin Ext, Email user CRM/CX, Role user CRM/CX(UserCRMRole). Có nút copy dòng.
+- Tab "Vật tư triển khai" (optional, chưa mở).
+- Nút **"Tiếp tục"** submit → POST (endpoint chưa chốt, đoán `POST sd/api/registrations`) → callback về bmsv2 wizard bước 3.
+- ⏳ CHƯA capture được body POST cuối (cần điền đủ dòng đầu số 9 field + submit). Draft YCHD đã tạo ở BMS (POST /registration/100847 bước 1→2) — reg 100847 đang ở trạng thái YCHD nháp, CHƯA submit SM tool.
+
+### Helper endpoints OnCallCX (capture 2026-11-27) + BLOCKER đầu số
+- `POST sd/api/registrations/calculate-package-services` (200) — tính giá/thành tiền gói (body = danh sách gói đã chọn; chưa bắt body chi tiết).
+- `GET sd/api/registrations/oncall-cx-service-infor?refCode={refCode}&email={emailCRM}` → `{isValid:true, message:null}` (validate email user CRM/CX).
+- `GET sd/api/master-datas/ivoice-phone-number-contract?contract={soHDVoice}` → `data:[]` nếu HĐ không có đầu số khả dụng cho KH. Đây là lookup đầu số theo **Số HĐ Voice** (iVoice contract).
+- 🔴 **BLOCKER capture POST cuối**: tab "Đầu số đính kèm" bắt buộc ≥1 đầu số, mà đầu số phải đến từ **1 HĐ Voice (iVoice) có sẵn + còn đầu số** thuộc đúng KH (FTI260766/CH00086717). SGVO18050 (HĐ của CH00086706 CSKH, KH khác) trả rỗng. ⇒ muốn submit OnCallCX phải có HĐ iVoice hợp lệ của KH này trước. CHƯA capture được body `POST` tạo (nút "Tiếp tục") vì thiếu đầu số. init-data endpoint replay 401 (SPA auth riêng) — chưa đọc được skeleton.
+- Reg 100847 hiện: YCHD nháp (BMS POST /registration/100847 đã chạy bước wizard), SM tool CHƯA submit.
+
+### ⭐ init-data = SKELETON POST payload OnCallCX (capture 2026-11-27, đọc qua browser network #1052)
+`GET sd/api/registrations/init-data?serviceType=13007&refCode=CH00086717_100847` (200 qua SPA) trả object = KHUNG body POST tạo YCHD:
+```
+{ id:0, opportunityCode, refCode, vat:10, beginPrice:0, requestType:1, requestTypeName:"Tạo Mới",
+  contractInfo:{ serviceGroup:13000, serviceType:13007, taxId, customerCode, contractCode, subcontractCode, objID, customerFullName, contactName, contactPhone, contactEmail, workId:0 },
+  saleInfo, customerInfo, deployUserInfo, deployImplementationInfo,
+  deployInfo:{ materials:[], packages:{ packageList:[], discountServicePackModel:{totalPrice,discount,finalPrice,discountType:2} }, phoneAttaches:[], productServices:{productServiceList:[],discountServicePackModel:{...}} },
+  serviceParams:{ company:"", userName:"", configDate:"", channelModem:"", oncallCXCluster:"", voiceMailStogeTime:"45", initType:"1", password:"", tanentId:"", recodingFileStogeTime:"45" },
+  attachFile, attachFileMaterial, appendixNote, isDisableUpdated:false }
+```
+⇒ POST create = điền `deployInfo.packages.packageList` (gói đã chọn), `deployInfo.phoneAttaches` (đầu số), `serviceParams` (email→userName?, channelModem, oncallCXCluster...). Endpoint POST chưa chốt (đoán `POST sd/api/registrations`), submit = nút "Tiếp tục".
+
+### 🔑 AUTH: registrations/* cần GATEWAY token, KHÁC auth.get-sm-token-api (SSO)
+Request-header SPA cho init-data: `Authorization: Bearer <JWT iss="fti-sm-service" aud="fti-sm-portal" AuthenticationType="GATEWAY_HS256">`. Đây là token SPA lưu `localStorage['Auth'].token`. KHÁC token `auth.get-sm-token-api` (SSO ftisapi/sm/v2/api/auth/sso/login). `master-datas/*` + `service-packs` nhận CẢ token SSO (generator hiện tại OK) nhưng `registrations/*` (init-data, và có thể cả POST create) 401 với SSO token → **cần generator mint gateway token** trước khi wire POST. Cần điều tra: SPA đổi SSO→gateway ở đâu (có thể /sm/v2/api/auth/... hoặc gateway exchange).
+
+### 🔴 Đầu số: KH FTI260766 (CH00086717) chưa có HĐ Voice iVoice còn đầu số → không tạo được OnCallCX đến khi KH có 1 số iVoice. (ivoice-phone-number-contract trả [] cho SGVO18050 — HĐ KH khác).
+
+### ✅✅ CAPTURED FULL — POST tạo YCHD OnCallCX (LIVE 2026-11-27, CH00086717, deploy id 5721)
+**Endpoint:** `POST https://ftisapi-stag.fpt.net/sm/v2/sd/api/registrations` (SM token — xác nhận: SPA dùng gateway token; cần test generator token SSO có 401 không).
+**Response:** `{data:{id:5721, redirectUrl:"https://ftms-stag.fpt.net/bms/RegistrationMagt/CreateRegist?RefCode=CH00086717_100847&callback=..."}, success:true, code:"GEN_200"}` → sau POST SM còn 1 bước BMS CreateRegist (giống CSKH insert-registration-iframe → BMS registration).
+**🔑 PHÁT HIỆN LỚN: đầu số NHẬP THỦ CÔNG được** — `phoneAttaches[].phoneNumber="02873001234"`, `contractIvoice=""`. KHÔNG cần HĐ iVoice có sẵn của KH (blocker trước SAI). Chỉ cần: Đầu số + Thông tin Ext (bắt buộc); IP/Port/callIOFormat/userCRMEmail/userCRMRole = null OK.
+**Body (đã verify 200):**
+```json
+{ "registration": { "id":0,"objId":0,"taxId":"<taxId>","opportunityCode":"<CH>","contractCode":null,"refCode":"<refCode>","serviceGroup":13000,"serviceType":13007,"status":0,"attachFile":"[]","attachFileMaterial":"[]","note":null,"initServiceCharge":0,"discount":0,"discountType":2,"totalMoney":<sum>,"discountProduct":0,"discountTypeProduct":2,"totalMoneyProduct":0,"vat":10,"description":null,"isTrialContract":0,"createUser":"<username>","requestType":1 },
+  "serviceInfor": { "id":0,"dataValue":{ "configDate":"","userName":"<emailCRM>","company":"","password":"","recodingFileStogeTime":"45","voiceMailStogeTime":"45","channelModem":"<modem>","initType":"1" } },
+  "materials": [],
+  "phoneAttaches": [ { "id":0,"provider":1,"phoneNumber":"<ddso>","contractIvoice":"","ipHost":null,"port":null,"callIOFormat":null,"extensionInfor":"<ext bắt buộc>","userCRMEmail":null,"userCRMRole":null,"deployType":0 } ],
+  "dataDetails": [ { "dataDetail":{ "id":0,"type":1,"packageServiceId":<packId vd 219>,"serviceGroup":13000,"serviceType":13007,"unitPrice":<price>,"quantity":1,"packageIdentifier":"1","description":null,"note":null,"provinceId":8,"districtId":<wardId>,"wardId":<wardId>,"address":"<addr>","addressFull":"<full>","provinceName":"<tp>","districtName":"<phuong>","wardName":"<phuong>","contactName":"<ten>","contactPhone":"<sdt>","contactEmail":"<email>","status":0,"name":"<tên gói>","packageServiceDetail":"<detail>","licenseSize":0,"isLadderPrice":0,"isManualAmount":false,"monthUse":1,"intoMoney":<price>,"monthUser":1,"isAddOn":0,"isTrial":0,"prepaidMonth":0 }, "serviceDetails":[] } ] }
+```
+- provider: 1=FPT, 2=Viettel, 3=Mobifone. requestType:1="Tạo mới". discountType:2 default. provinceId:8=HCM.
+- Helper POST `sd/api/registrations/calculate-package-services` tính intoMoney/totalMoney (gọi mỗi khi đổi gói/SL/tháng).
+- ⇒ Wire generator `sm.oncall-insert` + submitOncallcxButton: build body này. Một-click khả thi (đầu số manual + ext mặc định).
