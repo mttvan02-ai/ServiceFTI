@@ -1701,7 +1701,7 @@
 
     const serviceIdCskhInput = UI.h('input', { class: 'app-input', type: 'number', value: '0',
       placeholder: 'tự động lấy sau khi điền Mã cơ hội' });
-    const districtIdCskhInput = UI.h('input', { class: 'app-input', type: 'number', value: '0',
+    const districtIdCskhInput = UI.h('input', { class: 'app-input', type: 'number', value: '1000009712',
       placeholder: 'vd: 1000009712 — ward-id của địa chỉ thanh toán' });
     const effectiveDateCskh = UI.h('input', { class: 'app-input', type: 'text',
       value: (() => { const d = new Date(Date.now() - 86400000); return d.toISOString().substring(0, 10); })() });
