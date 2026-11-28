@@ -2271,6 +2271,115 @@
       },
     }, 'Tải đầu số');
 
+    const autoApproveOncall = UI.h('input', { type: 'checkbox' });
+    const bgdApproverOncallInput = UI.h('input', {
+      class: 'app-input', type: 'text', value: 'DuyVM4', style: 'max-width: 160px; display: inline-block;',
+    });
+    const cmApproverOncallInput = UI.h('input', {
+      class: 'app-input', type: 'text', value: 'demstaff.am', style: 'max-width: 160px; display: inline-block;',
+    });
+
+    // Full approve flow cho OnCallCX — mirror runCskhAutoApprove:
+    // BGĐ approve → new-CM execute (tạo HĐ, trigger DEM→BMS sync) → old-CM sync BMS v2.
+    async function runOncallcxAutoApprove(opportunityId) {
+      const cmEmail = toLoginEmail(cmApproverOncallInput.value.trim());
+
+      // ── Bước 1: BGĐ duyệt ──────────────────────────────────────────────────
+      const bgdEmail = toLoginEmail(bgdApproverOncallInput.value.trim());
+      const bgdLine = addLineOncallcx();
+      bgdLine.textContent = `⏳ Đăng nhập BGĐ (${bgdEmail})…`;
+      let bgdToken;
+      try {
+        const { token, cached } = await getCachedOrFreshToken(bgdEmail);
+        bgdToken = token;
+        bgdLine.textContent = cached ? `✓ Dùng lại token BGĐ (${bgdEmail})` : `✓ Đăng nhập BGĐ thành công (${bgdEmail})`;
+      } catch (err) {
+        bgdLine.textContent = '✗ Đăng nhập BGĐ lỗi: ' + (err.message || err);
+        bgdLine.classList.add('is-error');
+        return;
+      }
+
+      const approveLine = addLineOncallcx();
+      approveLine.textContent = `⏳ BGĐ duyệt YCHD OnCallCX (${opportunityId})…`;
+      let regCodes = [];
+      try {
+        const resp = await api.generate('registration.approve-bms', { bearerToken: bgdToken, opportunityId });
+        regCodes = resp.result.data.regCodes || [];
+        approveLine.textContent = `✓ BGĐ duyệt xong — CMR: ${regCodes.join(', ')}`;
+      } catch (err) {
+        approveLine.textContent = '✗ BGĐ duyệt lỗi: ' + (err.message || err);
+        approveLine.classList.add('is-error');
+        return;
+      }
+      if (regCodes.length === 0) {
+        addLineOncallcx().textContent = '⚠ Không tìm được CMR code — dừng trước bước CM';
+        return;
+      }
+
+      // ── Bước 2: new-CM execute (tạo HĐ, trigger DEM → BMS sync) ───────────
+      const newCmLine = addLineOncallcx();
+      newCmLine.textContent = `⏳ Lấy new-CM token (${cmEmail})…`;
+      let newCmToken;
+      try {
+        const { token, cached } = await getCachedOrFreshNewCmToken(cmEmail);
+        newCmToken = token;
+        newCmLine.textContent = cached ? `✓ Dùng lại new-CM token (${cmEmail})` : `✓ new-CM token OK (${cmEmail})`;
+      } catch (err) {
+        newCmLine.textContent = '✗ Lấy new-CM token lỗi: ' + (err.message || err);
+        newCmLine.classList.add('is-error');
+        return;
+      }
+
+      // ── Bước 3: old-CM token để sync BMS v2 ────────────────────────────────
+      const oldCmLine = addLineOncallcx();
+      oldCmLine.textContent = `⏳ Lấy old-CM token (${cmEmail}) để sync BMS v2…`;
+      let oldCmToken = null;
+      try {
+        const { token, cached } = await getCachedOrFreshCmToken(cmEmail);
+        oldCmToken = token;
+        oldCmLine.textContent = cached ? `✓ Dùng lại old-CM token (${cmEmail})` : `✓ old-CM token OK (${cmEmail})`;
+      } catch (err) {
+        oldCmLine.textContent = '⚠ Lấy old-CM token lỗi (bỏ qua sync BMS v2): ' + (err.message || err);
+        oldCmLine.classList.add('is-error');
+      }
+
+      // ── Chạy từng CMR code ─────────────────────────────────────────────────
+      for (const regCode of regCodes) {
+        // new-CM execute: tạo HĐ, trigger DEM approval, sync DEM→BMS
+        const execLine = addLineOncallcx();
+        execLine.textContent = `⏳ new-CM thực hiện YCHD OnCallCX ${regCode}…`;
+        let newCmDone = false;
+        try {
+          const resp = await api.generate('cskh.cm-execute', { cmToken: newCmToken, regCode });
+          const d = resp.result.data;
+          execLine.textContent = d.skipped
+            ? `✓ ${regCode} new-CM đã xong từ trước (HĐ ${d.contractNo || '?'})`
+            : `✓ ${regCode} new-CM xong — HĐ ${d.contractNo || '?'}`;
+          newCmDone = true;
+        } catch (err) {
+          execLine.textContent = `✗ new-CM chưa finalize ${regCode}: ` + (err.message || err);
+          execLine.classList.add('is-error');
+          addLineOncallcx().textContent = `→ Record CHƯA bị khóa. Vào new-CM duyệt DEM tay cho ${regCode}, hoặc dùng nút "Sync CM → BMS v2" sau khi DEM duyệt.`;
+        }
+
+        // old-CM sync BMS v2 — chỉ chạy khi new-CM đã finalize
+        if (newCmDone && oldCmToken) {
+          const syncLine = addLineOncallcx();
+          syncLine.textContent = `⏳ Sync BMS v2 (old-CM) cho ${regCode}…`;
+          try {
+            const resp = await api.generate('registration.approve-cm', { cmToken: oldCmToken, regCode });
+            const d = resp.result.data;
+            syncLine.textContent = d.skipped
+              ? `✓ BMS v2 đã sync từ trước — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`
+              : `✓ BMS v2 sync xong — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`;
+          } catch (err) {
+            syncLine.textContent = `✗ Sync BMS v2 lỗi ${regCode}: ` + (err.message || err);
+            syncLine.classList.add('is-error');
+          }
+        }
+      }
+    }
+
     const submitOncallcxButton = UI.h('button', {
       class: 'btn-generate', type: 'button',
       onclick: async () => {
@@ -2377,6 +2486,9 @@
             addLineOncallcx().textContent = `ℹ SM endpoint: ${d.smEndpointUsed} | smResult: ${String(d.smResult).substring(0, 120)}`;
           }
           UI.toast('success', `Tạo YCHD OnCallCX ✓ — ${d.ivoicePhoneNumber}`);
+          if (autoApproveOncall.checked) {
+            await runOncallcxAutoApprove(opportunityId);
+          }
         } catch (err) {
           const l = addLineOncallcx();
           l.textContent = '✗ Lỗi: ' + (err.message || err);
@@ -2387,6 +2499,84 @@
         }
       },
     }, 'Tạo YCHD OnCallCX');
+
+    // Nút chạy độc lập BGĐ + CM — dùng khi YCHD đã tạo sẵn (đang "Chờ BGĐ duyệt")
+    const approveOnlyOncallButton = UI.h('button', {
+      class: 'btn-generate', type: 'button',
+      style: 'background: var(--ink-700); color: var(--fg); margin-top: 8px;',
+      onclick: async () => {
+        statusOncallcx.innerHTML = '';
+        const opportunityId = opportunityCodeInput.value.trim();
+        if (!opportunityId) {
+          addLineOncallcx().textContent = '✗ Điền Mã cơ hội trước';
+          return;
+        }
+        approveOnlyOncallButton.disabled = true;
+        try {
+          await runOncallcxAutoApprove(opportunityId);
+        } finally {
+          approveOnlyOncallButton.disabled = false;
+        }
+      },
+    }, 'BGĐ duyệt + CM ghi nhận (YCHD đã có)');
+
+    // ── Sync CM → BMS v2 (DEM đã duyệt rồi, chỉ cần sync lại) ─────────────
+    const cmrSyncInput = UI.h('input', {
+      class: 'app-input', type: 'text', placeholder: 'vd: CMR2615831',
+      style: 'max-width: 200px; display: inline-block; margin-right: 8px;',
+    });
+    const cmSyncOnlyButton = UI.h('button', {
+      class: 'btn-generate', type: 'button',
+      style: 'background: var(--ink-600); color: var(--fg); margin-top: 8px; width: auto; padding: 8px 16px;',
+      onclick: async () => {
+        statusOncallcx.innerHTML = '';
+        const regCode = cmrSyncInput.value.trim();
+        if (!regCode) { addLineOncallcx().textContent = '✗ Nhập CMR code trước (vd CMR2615831)'; return; }
+        cmSyncOnlyButton.disabled = true;
+        try {
+          const cmEmail = toLoginEmail(cmApproverOncallInput.value.trim());
+          // new-CM execute trước (tạo HĐ, sync DEM→BMS)
+          const newCmLine = addLineOncallcx();
+          newCmLine.textContent = `⏳ Lấy new-CM token (${cmEmail})…`;
+          const { token: newCmToken, cached: nc } = await getCachedOrFreshNewCmToken(cmEmail);
+          newCmLine.textContent = nc ? `✓ Dùng lại new-CM token` : `✓ new-CM token OK`;
+          const execLine = addLineOncallcx();
+          execLine.textContent = `⏳ new-CM execute ${regCode} (tạo HĐ, sync DEM→BMS)…`;
+          let newCmDone = false;
+          try {
+            const execResp = await api.generate('cskh.cm-execute', { cmToken: newCmToken, regCode });
+            const ed = execResp.result.data;
+            execLine.textContent = ed.skipped ? `✓ ${regCode} đã xong từ trước (HĐ ${ed.contractNo || '?'})` : `✓ ${regCode} new-CM xong — HĐ ${ed.contractNo || '?'}`;
+            newCmDone = true;
+          } catch (err2) {
+            execLine.textContent = `✗ new-CM chưa finalize: ` + (err2.message || err2);
+            execLine.classList.add('is-error');
+          }
+          // old-CM sync BMS v2
+          if (newCmDone) {
+            const cmLine = addLineOncallcx();
+            cmLine.textContent = `⏳ Lấy old-CM token (${cmEmail})…`;
+            const { token: oldCmToken, cached } = await getCachedOrFreshCmToken(cmEmail);
+            cmLine.textContent = cached ? `✓ Dùng lại old-CM token` : `✓ old-CM token OK`;
+            const syncLine = addLineOncallcx();
+            syncLine.textContent = `⏳ Sync BMS v2 cho ${regCode}…`;
+            const resp = await api.generate('registration.approve-cm', { cmToken: oldCmToken, regCode });
+            const d = resp.result.data;
+            syncLine.textContent = d.skipped
+              ? `✓ BMS v2 đã sync — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`
+              : `✓ BMS v2 sync xong — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`;
+          }
+          UI.toast('success', `CM sync xong: ${regCode}`);
+        } catch (err) {
+          const l = addLineOncallcx();
+          l.textContent = '✗ Sync lỗi: ' + (err.message || err);
+          l.classList.add('is-error');
+          UI.toast('error', 'CM sync lỗi: ' + (err.message || err));
+        } finally {
+          cmSyncOnlyButton.disabled = false;
+        }
+      },
+    }, 'Sync CM → BMS v2 (DEM đã duyệt)');
 
     // Auto-prepare khi tra cứu cơ hội (oncallcx): tự điền Email user CRM/CX từ email
     // KH, tự tải gói dịch vụ, tự validate email → giảm thao tác tay. Đầu số KHÔNG tự
@@ -2448,6 +2638,13 @@
           field('Tên', techOncallName),
           field('SĐT', techOncallPhone),
           field('Email', techOncallEmail))),
+      UI.h('label', { class: 'd-block', style: 'margin-top: 10px;' },
+        UI.h('div', { class: 'hint', style: 'margin-bottom: 6px;' },
+          autoApproveOncall, ' Tự động BGĐ duyệt + CM ghi nhận sau khi Tạo thành công',
+          UI.h('span', { class: 'hint', style: 'margin-left: 8px;' }, '— hành động thật, mặc định tắt')),
+        UI.h('div', { class: 'field-grid-3', style: 'margin-top: 6px;' },
+          field('BGĐ duyệt', bgdApproverOncallInput),
+          field('CM ghi nhận', cmApproverOncallInput))),
       statusOncallcx);
     // ── end OnCallCX form ───────────────────────────────────────────────────────
 
@@ -2733,6 +2930,10 @@
       } else if (meta.value === 'oncallcx') {
         body.appendChild(formOncallcxBody);
         footer.appendChild(submitOncallcxButton);
+        footer.appendChild(approveOnlyOncallButton);
+        footer.appendChild(UI.h('div', { style: 'margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--ink-700);' },
+          UI.h('div', { class: 'hint', style: 'margin-bottom: 6px;' }, 'DEM đã duyệt → sync lại BMS v2:'),
+          cmrSyncInput, cmSyncOnlyButton));
       } else {
         phoneContractSlot.appendChild(sharedContractSection);
         phoneDeploySlot.appendChild(sharedDeploySection);
@@ -3010,9 +3211,9 @@
    * tạo loại nào xong mới click button"): the required "loại khách hàng"
    * choice is a real select the user picks BEFORE clicking, not silently
    * hardcoded — matches customer.create-random's `customerKind` param
-   * (see CreateRandomCustomerGenerator.java for the two supported shapes:
-   * Tổ chức nước ngoài / Cá nhân nước ngoài — both skip the Tỉnh/Phường
-   * cascading pickers, simplest to auto-fill correctly).
+   * (see CreateRandomCustomerGenerator.java for the four supported shapes:
+   * Tổ chức nước ngoài / Cá nhân nước ngoài / Tổ chức trong nước /
+   * Cá nhân trong nước — nước ngoài bỏ qua Tỉnh/Phường, đơn giản nhất).
    *
    * Logs in as the CM account (truongnv64, same convention as
    * mountHdPlApprovalCard), calls customer.create-random with the chosen
@@ -3026,7 +3227,9 @@
 
     const kindSelect = UI.h('select', { class: 'app-select', style: 'margin-top: 6px; width: auto; display: inline-block; margin-right: 6px;' },
       UI.h('option', { value: 'to-chuc-nuoc-ngoai' }, 'Tổ chức nước ngoài'),
-      UI.h('option', { value: 'ca-nhan-nuoc-ngoai' }, 'Cá nhân nước ngoài'));
+      UI.h('option', { value: 'ca-nhan-nuoc-ngoai' }, 'Cá nhân nước ngoài'),
+      UI.h('option', { value: 'to-chuc-trong-nuoc' }, 'Tổ chức trong nước'),
+      UI.h('option', { value: 'ca-nhan-trong-nuoc' }, 'Cá nhân trong nước'));
 
     const btn = UI.h('button', {
       type: 'button',
