@@ -765,7 +765,7 @@
         typeDocContract: 1, typeDocContractLabel: 'Hợp đồng' },
     ];
 
-    const saleInput = UI.h('input', { class: 'app-input', type: 'text', placeholder: 'vd: thitlh' });
+    const saleInput = UI.h('input', { class: 'app-input', type: 'text', value: 'thitlh', placeholder: 'vd: thitlh' });
     const opportunityCodeInput = UI.h('input', { class: 'app-input', type: 'text', placeholder: 'CH00085410' });
     const VISIBLE_SERVICE_TYPES = SERVICE_TYPES.filter((t) =>
       pageKind === 'sm' ? SM_SERVICE_VALUES.includes(t.value) : !SM_SERVICE_VALUES.includes(t.value));
@@ -2271,7 +2271,7 @@
       },
     }, 'Tải đầu số');
 
-    const autoApproveOncall = UI.h('input', { type: 'checkbox' });
+    const autoApproveOncall = UI.h('input', { type: 'checkbox', checked: true });
     const bgdApproverOncallInput = UI.h('input', {
       class: 'app-input', type: 'text', value: 'DuyVM4', style: 'max-width: 160px; display: inline-block;',
     });
@@ -2500,83 +2500,6 @@
       },
     }, 'Tạo YCHD OnCallCX');
 
-    // Nút chạy độc lập BGĐ + CM — dùng khi YCHD đã tạo sẵn (đang "Chờ BGĐ duyệt")
-    const approveOnlyOncallButton = UI.h('button', {
-      class: 'btn-generate', type: 'button',
-      style: 'background: var(--ink-700); color: var(--fg); margin-top: 8px;',
-      onclick: async () => {
-        statusOncallcx.innerHTML = '';
-        const opportunityId = opportunityCodeInput.value.trim();
-        if (!opportunityId) {
-          addLineOncallcx().textContent = '✗ Điền Mã cơ hội trước';
-          return;
-        }
-        approveOnlyOncallButton.disabled = true;
-        try {
-          await runOncallcxAutoApprove(opportunityId);
-        } finally {
-          approveOnlyOncallButton.disabled = false;
-        }
-      },
-    }, 'BGĐ duyệt + CM ghi nhận (YCHD đã có)');
-
-    // ── Sync CM → BMS v2 (DEM đã duyệt rồi, chỉ cần sync lại) ─────────────
-    const cmrSyncInput = UI.h('input', {
-      class: 'app-input', type: 'text', placeholder: 'vd: CMR2615831',
-      style: 'max-width: 200px; display: inline-block; margin-right: 8px;',
-    });
-    const cmSyncOnlyButton = UI.h('button', {
-      class: 'btn-generate', type: 'button',
-      style: 'background: var(--ink-600); color: var(--fg); margin-top: 8px; width: auto; padding: 8px 16px;',
-      onclick: async () => {
-        statusOncallcx.innerHTML = '';
-        const regCode = cmrSyncInput.value.trim();
-        if (!regCode) { addLineOncallcx().textContent = '✗ Nhập CMR code trước (vd CMR2615831)'; return; }
-        cmSyncOnlyButton.disabled = true;
-        try {
-          const cmEmail = toLoginEmail(cmApproverOncallInput.value.trim());
-          // new-CM execute trước (tạo HĐ, sync DEM→BMS)
-          const newCmLine = addLineOncallcx();
-          newCmLine.textContent = `⏳ Lấy new-CM token (${cmEmail})…`;
-          const { token: newCmToken, cached: nc } = await getCachedOrFreshNewCmToken(cmEmail);
-          newCmLine.textContent = nc ? `✓ Dùng lại new-CM token` : `✓ new-CM token OK`;
-          const execLine = addLineOncallcx();
-          execLine.textContent = `⏳ new-CM execute ${regCode} (tạo HĐ, sync DEM→BMS)…`;
-          let newCmDone = false;
-          try {
-            const execResp = await api.generate('cskh.cm-execute', { cmToken: newCmToken, regCode });
-            const ed = execResp.result.data;
-            execLine.textContent = ed.skipped ? `✓ ${regCode} đã xong từ trước (HĐ ${ed.contractNo || '?'})` : `✓ ${regCode} new-CM xong — HĐ ${ed.contractNo || '?'}`;
-            newCmDone = true;
-          } catch (err2) {
-            execLine.textContent = `✗ new-CM chưa finalize: ` + (err2.message || err2);
-            execLine.classList.add('is-error');
-          }
-          // old-CM sync BMS v2
-          if (newCmDone) {
-            const cmLine = addLineOncallcx();
-            cmLine.textContent = `⏳ Lấy old-CM token (${cmEmail})…`;
-            const { token: oldCmToken, cached } = await getCachedOrFreshCmToken(cmEmail);
-            cmLine.textContent = cached ? `✓ Dùng lại old-CM token` : `✓ old-CM token OK`;
-            const syncLine = addLineOncallcx();
-            syncLine.textContent = `⏳ Sync BMS v2 cho ${regCode}…`;
-            const resp = await api.generate('registration.approve-cm', { cmToken: oldCmToken, regCode });
-            const d = resp.result.data;
-            syncLine.textContent = d.skipped
-              ? `✓ BMS v2 đã sync — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`
-              : `✓ BMS v2 sync xong — HĐ ${d.contractNo || '?'} · PL ${d.subContractNo || '?'}`;
-          }
-          UI.toast('success', `CM sync xong: ${regCode}`);
-        } catch (err) {
-          const l = addLineOncallcx();
-          l.textContent = '✗ Sync lỗi: ' + (err.message || err);
-          l.classList.add('is-error');
-          UI.toast('error', 'CM sync lỗi: ' + (err.message || err));
-        } finally {
-          cmSyncOnlyButton.disabled = false;
-        }
-      },
-    }, 'Sync CM → BMS v2 (DEM đã duyệt)');
 
     // Auto-prepare khi tra cứu cơ hội (oncallcx): tự điền Email user CRM/CX từ email
     // KH, tự tải gói dịch vụ, tự validate email → giảm thao tác tay. Đầu số KHÔNG tự
@@ -2930,10 +2853,6 @@
       } else if (meta.value === 'oncallcx') {
         body.appendChild(formOncallcxBody);
         footer.appendChild(submitOncallcxButton);
-        footer.appendChild(approveOnlyOncallButton);
-        footer.appendChild(UI.h('div', { style: 'margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--ink-700);' },
-          UI.h('div', { class: 'hint', style: 'margin-bottom: 6px;' }, 'DEM đã duyệt → sync lại BMS v2:'),
-          cmrSyncInput, cmSyncOnlyButton));
       } else {
         phoneContractSlot.appendChild(sharedContractSection);
         phoneDeploySlot.appendChild(sharedDeploySection);
@@ -3180,6 +3099,7 @@
     // the stage forward, so this now does the real transition, still carrying
     // the same note on each step).
     const noteCb = UI.h('input', { type: 'checkbox', dataset: { autoflow: 'stage-note' } });
+    noteCb.checked = true;
     const noteInput = UI.h('input', {
       type: 'text', class: 'app-input', dataset: { autoflow: 'stage-note-text' },
       value: 'Chuyển giai đoạn tự động qua tool', style: 'margin-top:6px;'
@@ -3188,6 +3108,7 @@
     // Quotation — calls opportunity.quotation, same creator (Sale/AM) token as
     // the opportunity itself, no extra login needed (unlike evaluate/approve).
     const quoteCb = UI.h('input', { type: 'checkbox', dataset: { autoflow: 'quotation' } });
+    quoteCb.checked = true;
     const quotePriceInput = UI.h('input', {
       type: 'text', class: 'app-input', dataset: { autoflow: 'quotation-price' },
       value: '1', style: 'margin-top:6px;max-width:160px;', placeholder: 'Đơn giá mỗi dịch vụ (VND)'
@@ -3263,7 +3184,7 @@
     const tokenInput = tokenWrap.querySelector('input');
     if (!tokenInput) return;
 
-    const userInput = UI.h('input', { class: 'app-input', type: 'text', placeholder: 'vd: thitlh@fpt.com' });
+    const userInput = UI.h('input', { class: 'app-input', type: 'text', value: 'thitlh@fpt.com' });
     const passInput = UI.h('input', { class: 'app-input', type: 'password', value: 'ISC22QC', style: 'max-width:140px;' });
     const fetchBtn = UI.h('button', { class: 'icon-btn', type: 'button' }, 'Lấy Token');
     const statusEl = UI.h('span', { class: 'hint' });

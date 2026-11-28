@@ -173,83 +173,134 @@ public class InsertSmOncallRegistrationGenerator implements Generator {
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(TIMEOUT_SECONDS)).build();
 
-        // ── Step 1: SM SD API — POST /registrations/insert-registration ──────────
-        ObjectNode configInfo = MAPPER.createObjectNode();
-        configInfo.put("emailUserCrmCx", emailCrmCx);
-        configInfo.put("modemInfo", modemInfo);
-        configInfo.put("ivoiceContract", ivoiceContract);
-        configInfo.put("ivoicePhoneNumber", ivoicePhoneNumber);
+        // ── Step 1: SM SD API — POST /sm/v2/sd/api/registrations ────────────────
+        // Payload captured live 2026-11-28 từ browser network khi user thao tác thủ công
+        // trên sm/v2/sd/deploys/create cho CH00086729 — đây là exact body cấu trúc đúng.
+        long totalMoney = (long)(packPrice * qty);
+        String saleUsername = saleName.contains("@") ? saleName.split("@")[0] : saleName;
 
-        ObjectNode regDetail = MAPPER.createObjectNode();
-        regDetail.put("id", 1);
-        regDetail.put("isNew", 1);
-        regDetail.put("regDetailCode", opportunityId + "-1");
-        regDetail.put("serviceGroup", SERVICE_GROUP);
-        regDetail.put("serviceType", SERVICE_TYPE);
-        regDetail.put("packId", packId);
-        regDetail.put("packName", packName);
-        regDetail.put("packPrice", packPrice);
-        regDetail.put("qty", qty);
-        regDetail.put("months", months);
-        regDetail.put("vat", vat);
-        regDetail.set("configInfo", configInfo);
+        ObjectNode smRegistration = MAPPER.createObjectNode();
+        smRegistration.put("id", 0);
+        smRegistration.put("objId", 0);
+        smRegistration.put("taxId", taxId != null ? taxId : "");
+        smRegistration.put("opportunityCode", opportunityId);
+        smRegistration.putNull("contractCode");
+        smRegistration.put("refCode", refCode);
+        smRegistration.put("serviceGroup", SERVICE_GROUP);
+        smRegistration.put("serviceType", SERVICE_TYPE);
+        smRegistration.put("status", 0);
+        smRegistration.put("attachFile", "[]");
+        smRegistration.put("attachFileMaterial", "[]");
+        smRegistration.putNull("note");
+        smRegistration.put("initServiceCharge", 0);
+        smRegistration.put("discount", 0);
+        smRegistration.put("discountType", 2);
+        smRegistration.put("totalMoney", totalMoney);
+        smRegistration.put("discountProduct", 0);
+        smRegistration.put("discountTypeProduct", 2);
+        smRegistration.put("totalMoneyProduct", 0);
+        smRegistration.put("vat", vat);
+        smRegistration.putNull("description");
+        smRegistration.put("isTrialContract", 0);
+        smRegistration.put("createUser", saleUsername);
+        smRegistration.put("requestType", 1);
+
+        // serviceInfor: thông số kỹ thuật OnCallCX (email CRM, modem, v.v.)
+        ObjectNode dataValue = MAPPER.createObjectNode();
+        dataValue.put("configDate", "");
+        dataValue.put("userName", emailCrmCx);
+        dataValue.put("company", "");
+        dataValue.put("password", "");
+        dataValue.put("recodingFileStogeTime", "45");
+        dataValue.put("voiceMailStogeTime", "45");
+        dataValue.put("channelModem", modemInfo);
+        dataValue.put("initType", "1");
+        ObjectNode serviceInfor = MAPPER.createObjectNode();
+        serviceInfor.put("id", 0);
+        serviceInfor.set("dataValue", dataValue);
+
+        // phoneAttaches: đầu số iVoice đính kèm
+        ObjectNode phoneAttach = MAPPER.createObjectNode();
+        phoneAttach.put("id", 0);
+        phoneAttach.put("provider", 1);
+        phoneAttach.put("phoneNumber", ivoicePhoneNumber);
+        phoneAttach.put("contractIvoice", ivoiceContract);
+        phoneAttach.put("ipHost", "1.1.11.1");
+        phoneAttach.put("port", "80");
+        phoneAttach.put("callIOFormat", "2");
+        phoneAttach.put("extensionInfor", "");
+        phoneAttach.put("userCRMEmail", emailCrmCx);
+        phoneAttach.put("userCRMRole", 2);
+        phoneAttach.put("deployType", 0);
+
+        // dataDetails: gói dịch vụ — nested {dataDetail:{...}, serviceDetails:[]}
+        ObjectNode dataDetailInner = MAPPER.createObjectNode();
+        dataDetailInner.put("id", 0);
+        dataDetailInner.put("type", 1);
+        dataDetailInner.put("packageServiceId", packId);
+        dataDetailInner.put("serviceGroup", SERVICE_GROUP);
+        dataDetailInner.put("serviceType", SERVICE_TYPE);
+        dataDetailInner.put("unitPrice", (long) packPrice);
+        dataDetailInner.put("quantity", qty);
+        dataDetailInner.put("packageIdentifier", "1");
+        dataDetailInner.putNull("description");
+        dataDetailInner.putNull("note");
+        dataDetailInner.put("provinceId", locationId);
+        dataDetailInner.put("districtId", districtId > 0 ? districtId : 1000009697);
+        dataDetailInner.put("wardId", districtId > 0 ? districtId : 1000009697);
+        dataDetailInner.put("address", "22");
+        dataDetailInner.put("addressFull", "22, Phường An Đông, Thành phố Hồ Chí Minh");
+        dataDetailInner.put("provinceName", "Thành phố Hồ Chí Minh");
+        dataDetailInner.put("districtName", "Phường An Đông");
+        dataDetailInner.put("wardName", "Phường An Đông");
+        dataDetailInner.put("contactName", billingName);
+        dataDetailInner.put("contactPhone", billingPhone);
+        dataDetailInner.put("contactEmail", billingEmail != null && !billingEmail.isBlank() ? billingEmail : emailCrmCx);
+        dataDetailInner.put("status", 0);
+        dataDetailInner.put("name", packName);
+        dataDetailInner.put("packageServiceDetail", "");
+        dataDetailInner.put("licenseSize", 0);
+        dataDetailInner.put("isLadderPrice", 0);
+        dataDetailInner.put("isManualAmount", false);
+        dataDetailInner.put("monthUse", months);
+        dataDetailInner.put("intoMoney", totalMoney);
+        dataDetailInner.put("monthUser", months);
+        dataDetailInner.put("isAddOn", 0);
+        dataDetailInner.put("isTrial", 0);
+        dataDetailInner.put("prepaidMonth", 0);
+        ObjectNode dataDetailWrapper = MAPPER.createObjectNode();
+        dataDetailWrapper.set("dataDetail", dataDetailInner);
+        dataDetailWrapper.set("serviceDetails", MAPPER.createArrayNode());
 
         ObjectNode smBody = MAPPER.createObjectNode();
-        smBody.put("id", 0);
-        smBody.put("opportunityCode", opportunityId);
-        smBody.put("refCode", refCode);
-        smBody.put("serviceGroup", SERVICE_GROUP);
-        smBody.put("serviceType", SERVICE_TYPE);
-        smBody.put("taxId", taxId);
-        smBody.put("emailUserCrmCx", emailCrmCx);
-        smBody.put("modemInfo", modemInfo);
-        smBody.put("ivoiceContract", ivoiceContract);
-        smBody.put("ivoicePhoneNumber", ivoicePhoneNumber);
-        smBody.set("registrationDetails", MAPPER.createArrayNode().add(regDetail));
+        smBody.set("registration", smRegistration);
+        smBody.set("serviceInfor", serviceInfor);
+        smBody.set("materials", MAPPER.createArrayNode());
+        smBody.set("phoneAttaches", MAPPER.createArrayNode().add(phoneAttach));
+        smBody.set("dataDetails", MAPPER.createArrayNode().add(dataDetailWrapper));
 
-        // Try primary endpoint first; if 404/405/500 try alternatives
         String smResult = "unknown";
-        String[] smEndpoints = {
-                SM_SD_BASE + "/registrations/insert-registration",
-                SM_SD_BASE + "/registrations/insert-registration-iframe",
-                SM_SD_BASE + "/registration/insert-registration",
-                SM_SD_BASE + "/registration/insert-registration-iframe",
-        };
-
+        String smEndpointUsed = SM_SD_BASE + "/registrations";
         boolean smOk = false;
-        String smEndpointUsed = smEndpoints[0];
-        for (String endpoint : smEndpoints) {
-            trace(log, "POST " + endpoint + " refCode=" + refCode);
-            try {
-                JsonNode smResp = postJson(client, endpoint, smToken, toJson(smBody), log);
-                smResult = smResp != null ? smResp.toString() : "{}";
-                smEndpointUsed = endpoint;
-                smOk = true;
-                trace(log, "SM SD step 1 OK via " + endpoint);
-                break;
-            } catch (GeneratorException e) {
-                String msg = e.getMessage() != null ? e.getMessage() : "";
-                // If 404/405/501 → try next endpoint
-                if (msg.contains("HTTP 404") || msg.contains("HTTP 405") || msg.contains("HTTP 501")) {
-                    trace(log, "Endpoint " + endpoint + " không khả dụng (" + msg.substring(0, Math.min(100, msg.length())) + ") — thử endpoint tiếp theo");
-                } else if (msg.contains("đang trong quy trình") || msg.contains("BUSINESS_ERROR") || msg.contains("already")) {
-                    // Business error but SM accepted the request → continue to BMS
-                    trace(log, "SM SD: " + msg.substring(0, Math.min(200, msg.length())));
-                    smResult = "business-error-skip";
-                    smEndpointUsed = endpoint;
-                    smOk = true;
-                    break;
-                } else {
-                    // Unexpected error — log and rethrow
-                    trace(log, "SM SD lỗi: " + msg);
-                    throw e;
-                }
-            }
-        }
 
-        if (!smOk) {
-            trace(log, "WARN: Tất cả SM SD endpoints đều trả 404/405 — tiếp tục BMS step (SM có thể không yêu cầu bước này)");
-            smResult = "all-endpoints-404";
+        trace(log, "POST " + smEndpointUsed + " opportunityCode=" + opportunityId + " packId=" + packId);
+        try {
+            JsonNode smResp = postJson(client, smEndpointUsed, smToken, toJson(smBody), log);
+            smResult = smResp != null ? smResp.toString() : "{}";
+            // Check success field
+            boolean smSuccess = smResp != null && smResp.path("success").asBoolean(false);
+            if (smSuccess) {
+                smOk = true;
+                trace(log, "SM SD POST /registrations OK");
+            } else {
+                String smMsg = smResp != null ? smResp.path("error").path("message").asText("?") : "?";
+                trace(log, "SM SD POST /registrations NOTOK: " + smMsg + " — tiếp tục BMS");
+                smResult = "sm-failed: " + smMsg;
+                smOk = false; // Log nhưng không throw — vẫn tiếp tục BMS
+            }
+        } catch (GeneratorException e) {
+            trace(log, "SM SD POST lỗi: " + (e.getMessage() != null ? e.getMessage().substring(0, Math.min(200, e.getMessage().length())) : "?") + " — tiếp tục BMS");
+            smResult = "sm-exception";
         }
 
         // ── Step 2: BMS v2 — POST /registration/{registrationId} ─────────────────

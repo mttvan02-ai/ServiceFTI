@@ -81,7 +81,8 @@ public class OpportunityApiGenerator implements Generator {
                         .placeholder("FTI260088"),
 
                 ParamSpec.text("name").label("Opportunity name").required()
-                        .defaultValue("Dat test").placeholder("<=200 characters"),
+                        .defaultValue("QC test " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")))
+                        .placeholder("<=200 characters"),
                 ParamSpec.text("description").label("Description").required()
                         .defaultValue("Auto-created via API generator"),
 
@@ -108,7 +109,7 @@ public class OpportunityApiGenerator implements Generator {
                 ParamSpec.text("saleName").label("AM (sale phụ trách)").required()
                         .defaultValue("ThiTLH"),
                 ParamSpec.text("tppCanApproval").label("TPP đánh giá (Trưởng/Phó phòng)").required()
-                        .defaultValue("AnhDTT12").hint("comma-separated for multiple"),
+                        .defaultValue("DungNTM10").hint("comma-separated for multiple"),
                 ParamSpec.text("usersCanApproval").label("BGĐ phê duyệt").required()
                         .defaultValue("Huyennhk").hint("comma-separated for multiple"),
                 ParamSpec.text("userReceiveNotification").label("Gửi thông báo (optional)")
